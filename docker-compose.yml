@@ -1,0 +1,104 @@
+services:
+  indexer-proxy:
+    image: alpine/socat
+    network_mode: host
+    command: tcp-listen:19200,fork,reuseaddr,bind=0.0.0.0 tcp:127.0.0.1:9200
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - .env
+    depends_on:
+      indexer-proxy:
+        condition: service_started
+      ollama:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - /etc/wazuh-indexer/certs:/wazuh-certs:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  celery-worker:
+    build:
+      context: ./backend
+    env_file:
+      - .env
+    depends_on:
+      - backend
+      - ollama
+      - redis
+      - postgres
+    volumes:
+      - /etc/wazuh-indexer/certs:/wazuh-certs:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: celery -A app.celery_app:celery_app worker -l info
+
+  celery-beat:
+    build:
+      context: ./backend
+    env_file:
+      - .env
+    depends_on:
+      - backend
+      - ollama
+      - redis
+      - postgres
+    volumes:
+      - /etc/wazuh-indexer/certs:/wazuh-certs:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: celery -A app.celery_app:celery_app beat -l info
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5000:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  ollama_data:
