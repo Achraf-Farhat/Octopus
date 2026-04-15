@@ -1,27 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import AlertTable from '../components/AlertTable'
 import AIExplanation from '../components/AIExplanation'
 import AlertsTrendChart from '../components/AlertsTrendChart'
 import AppLayout from '../components/AppLayout'
 import MetricCard from '../components/MetricCard'
-import SearchBar from '../components/SearchBar'
 import api from '../lib/api'
 
 function queryHasExplicitTimeClause(query) {
   const text = String(query || '')
   return /@timestamp\s*:\s*\[|\btimestamp\b|\bnow\s*[-+]/i.test(text)
-}
-
-function parseTranslationTimeRange(timeRange, fallbackQuery = '') {
-  const normalized = String(timeRange || '').toLowerCase()
-  const source = String(fallbackQuery || '').toLowerCase()
-
-  if (normalized.includes('hour') || source.includes('last hour')) return { mode: 'relative', value: 1, unit: 'hours', preset: 'hours' }
-  if (normalized.includes('today') || source.includes('today')) return { mode: 'relative', value: 1, unit: 'days', preset: 'days' }
-  if (normalized.includes('day') || source.includes('day')) return { mode: 'relative', value: 7, unit: 'days', preset: 'days' }
-  if (normalized.includes('month') || source.includes('month')) return { mode: 'relative', value: 1, unit: 'months', preset: 'months' }
-  if (normalized.includes('year') || source.includes('year')) return { mode: 'relative', value: 1, unit: 'years', preset: 'years' }
-  return null
 }
 
 function mergeQuery(baseQuery, timeClause) {
@@ -33,22 +20,43 @@ function mergeQuery(baseQuery, timeClause) {
 }
 
 function getTimelineInterval(timeFilter) {
-  if (!timeFilter || timeFilter.mode === 'all') return 'month'
-  const value = Number(timeFilter.value)
-  if (!Number.isFinite(value) || value <= 0) return 'day'
+  const start = timeFilter?.startDateTime ? new Date(timeFilter.startDateTime) : null
+  const end = timeFilter?.endDateTime ? new Date(timeFilter.endDateTime) : null
+  if (!start || !end) return 'month'
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 'month'
+  if (start.getTime() > end.getTime()) return 'month'
 
-  if (timeFilter.unit === 'hours') return 'hour'
-  if (timeFilter.unit === 'days') {
-    if (value <= 7) return 'hour'
-    if (value <= 90) return 'day'
-    return 'week'
+  const diffHours = (end.getTime() - start.getTime()) / 36e5
+  if (diffHours <= 48) return 'hour'
+  if (diffHours <= 24 * 90) return 'day'
+  if (diffHours <= 24 * 365 * 2) return 'week'
+  return 'month'
+}
+
+function toLocalDateTimeValue(date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  return `${year}-${month}-${day}T${hours}:${minutes}`
+}
+
+function getDefaultTimeFilter() {
+  const end = new Date()
+  const start = new Date(end.getTime() - 24 * 60 * 60 * 1000)
+  return {
+    startDateTime: toLocalDateTimeValue(start),
+    endDateTime: toLocalDateTimeValue(end),
   }
-  if (timeFilter.unit === 'months') {
-    if (value <= 6) return 'week'
-    if (value <= 24) return 'month'
-    return 'year'
-  }
-  return value <= 2 ? 'month' : 'year'
+}
+
+function hasValidTimeRange(filter) {
+  const start = filter?.startDateTime ? new Date(filter.startDateTime) : null
+  const end = filter?.endDateTime ? new Date(filter.endDateTime) : null
+  if (!start || !end) return false
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return false
+  return start.getTime() <= end.getTime()
 }
 
 function buildAlertDetailsDocument(item) {
@@ -119,15 +127,45 @@ function normalizeAlert(item) {
   }
 }
 
+function getCalendarDays(year, month) {
+  const firstDay = new Date(year, month, 1)
+  const lastDay = new Date(year, month + 1, 0)
+  const dayCount = lastDay.getDate()
+  const offset = firstDay.getDay()
+  const cells = []
+
+  for (let i = 0; i < offset; i += 1) cells.push(null)
+  for (let day = 1; day <= dayCount; day += 1) cells.push(day)
+  while (cells.length % 7 !== 0) cells.push(null)
+
+  return cells
+}
+
+function extractHour(dateTimeValue) {
+  const raw = String(dateTimeValue || '')
+  const hour = Number(raw.split('T')[1]?.split(':')[0] ?? 0)
+  if (!Number.isFinite(hour)) return 0
+  return Math.max(0, Math.min(23, hour))
+}
+
+function setDateWithHour(year, month, day, hour) {
+  return toLocalDateTimeValue(new Date(year, month, day, hour, 0, 0, 0))
+}
+
 export default function Dashboard() {
+  const dynamicExamples = useMemo(
+    () => ['Today\'s alerts', 'Alerts from this IP address', 'Critical alerts from last 6 hours', 'Failed SSH logins this week'],
+    [],
+  )
+
   const [alerts, setAlerts] = useState([])
   const [trendPoints, setTrendPoints] = useState([])
   const [selectedAlert, setSelectedAlert] = useState(null)
   const [explanation, setExplanation] = useState('Select an alert to generate an explanation.')
   const [metrics, setMetrics] = useState({ total: 0, low: 0, medium: 0, high: 0, critical: 0 })
-  const [search, setSearch] = useState('SSH brute force from IP today')
+  const [search, setSearch] = useState('')
   const [translation, setTranslation] = useState('')
-  const [translationMeta, setTranslationMeta] = useState({ language: 'dql', confidence: null, timeRange: 'unspecified', notes: '' })
+  const [translationMeta, setTranslationMeta] = useState({ language: 'dql', timeRange: 'unspecified', notes: '' })
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -137,47 +175,104 @@ export default function Dashboard() {
   const [pageSize] = useState(100)
   const [activeBaseQuery, setActiveBaseQuery] = useState('')
   const [activeQuery, setActiveQuery] = useState('')
-  const [timeFilter, setTimeFilter] = useState({ mode: 'all', value: 30, unit: 'days', startDate: '', endDate: '', preset: 'all' })
+  const [searchHistory, setSearchHistory] = useState([])
+  const [timeFilter, setTimeFilter] = useState(getDefaultTimeFilter)
+  const [exampleIndex, setExampleIndex] = useState(0)
+  const [exampleText, setExampleText] = useState('')
+  const [isDeletingExample, setIsDeletingExample] = useState(false)
+  const [showCalendar, setShowCalendar] = useState(false)
+  const [calendarStage, setCalendarStage] = useState('start')
+  const [manualDateEntry, setManualDateEntry] = useState(false)
+  const [calendarView, setCalendarView] = useState(() => {
+    const now = new Date()
+    return { month: now.getMonth(), year: now.getFullYear() }
+  })
+  const hasMountedDateSync = useRef(false)
+  const calendarRef = useRef(null)
+
+  const dayCells = useMemo(() => getCalendarDays(calendarView.year, calendarView.month), [calendarView.month, calendarView.year])
+
+  const startDate = useMemo(() => {
+    if (!timeFilter.startDateTime) return null
+    const value = new Date(timeFilter.startDateTime)
+    return Number.isNaN(value.getTime()) ? null : value
+  }, [timeFilter.startDateTime])
+
+  const endDate = useMemo(() => {
+    if (!timeFilter.endDateTime) return null
+    const value = new Date(timeFilter.endDateTime)
+    return Number.isNaN(value.getTime()) ? null : value
+  }, [timeFilter.endDateTime])
+
+  useEffect(() => {
+    if ((search || '').trim().length > 0) return undefined
+
+    const current = dynamicExamples[exampleIndex % dynamicExamples.length]
+    let delay = isDeletingExample ? 34 : 68
+
+    if (!isDeletingExample && exampleText === current) {
+      delay = 900
+    }
+    if (isDeletingExample && exampleText.length === 0) {
+      delay = 260
+    }
+
+    const timer = setTimeout(() => {
+      if (!isDeletingExample) {
+        if (exampleText === current) {
+          setIsDeletingExample(true)
+        } else {
+          setExampleText(current.slice(0, exampleText.length + 1))
+        }
+      } else if (exampleText.length === 0) {
+        setIsDeletingExample(false)
+        setExampleIndex((value) => (value + 1) % dynamicExamples.length)
+      } else {
+        setExampleText(current.slice(0, exampleText.length - 1))
+      }
+    }, delay)
+
+    return () => clearTimeout(timer)
+  }, [dynamicExamples, exampleIndex, exampleText, isDeletingExample, search])
+
+  useEffect(() => {
+    function handleOutsideClick(event) {
+      if (!showCalendar) return
+      if (calendarRef.current && !calendarRef.current.contains(event.target)) {
+        setShowCalendar(false)
+        setManualDateEntry(false)
+        setCalendarStage('start')
+      }
+    }
+
+    document.addEventListener('mousedown', handleOutsideClick)
+    return () => document.removeEventListener('mousedown', handleOutsideClick)
+  }, [showCalendar])
+
+  async function loadSearchHistory() {
+    try {
+      const response = await api.get('/alerts/history', { params: { limit: 20 } })
+      setSearchHistory(Array.isArray(response.data?.data?.items) ? response.data.data.items : [])
+    } catch {
+      setSearchHistory([])
+    }
+  }
 
   function buildCalendarClause(filter) {
-    if (!filter || filter.mode === 'all') return ''
-    if (filter.mode === 'custom' && filter.startDate && filter.endDate) {
-      const start = new Date(filter.startDate)
-      const end = new Date(filter.endDate)
-      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return ''
-      return `@timestamp:[${start.toISOString()} TO ${end.toISOString()}]`
-    }
-    if (filter.mode === 'relative') {
-      const value = Number(filter.value)
-      if (!Number.isFinite(value) || value <= 0) return ''
-      const suffix = filter.unit === 'hours' ? 'h' : filter.unit === 'months' ? 'M' : filter.unit === 'years' ? 'y' : 'd'
-      return `@timestamp:[now-${value}${suffix} TO now]`
-    }
-    return ''
+    const start = filter?.startDateTime ? new Date(filter.startDateTime) : null
+    const end = filter?.endDateTime ? new Date(filter.endDateTime) : null
+    if (!start || !end) return ''
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return ''
+    if (start.getTime() > end.getTime()) return ''
+    return `@timestamp:[${start.toISOString()} TO ${end.toISOString()}]`
   }
 
-  function getIntervalOptions() {
-    return [
-      { key: 'all', label: 'All time' },
-      { key: 'hours', label: 'Hours' },
-      { key: 'days', label: 'Days' },
-      { key: 'months', label: 'Months' },
-      { key: 'years', label: 'Years' },
-      { key: 'custom', label: 'Custom' },
-    ]
-  }
-
-  function applyCalendarMode(nextMode) {
-    setTimeFilter((previous) => {
-      if (nextMode === 'all') return { mode: 'all', value: 30, unit: 'days', startDate: '', endDate: '', preset: 'all' }
-      if (nextMode === 'custom') return { ...previous, mode: 'custom', preset: 'custom' }
-      const nextUnit = nextMode === 'hours' ? 'hours' : nextMode === 'days' ? 'days' : nextMode === 'months' ? 'months' : nextMode === 'years' ? 'years' : previous.unit
-      const nextValue = nextMode === 'hours' ? 6 : nextMode === 'days' ? 7 : nextMode === 'months' ? 1 : nextMode === 'years' ? 1 : previous.value
-      return { ...previous, mode: 'relative', unit: nextUnit, value: nextValue, preset: nextMode }
-    })
-  }
-
-  async function loadAlerts(baseQuery, nextPage = 1) {
+  async function loadAlerts(baseQuery, nextPage = 1, options = {}) {
+    const {
+      persistHistory = false,
+      naturalQuery = '',
+      translatedQuery = '',
+    } = options
     const finalBaseQuery = baseQuery ?? ''
     const combinedQuery = mergeQuery(finalBaseQuery, buildCalendarClause(timeFilter))
     setLoading(true)
@@ -186,6 +281,13 @@ export default function Dashboard() {
       const response = await api.get('/alerts', {
         params: {
           ...(combinedQuery ? { query: combinedQuery } : {}),
+          ...(persistHistory && naturalQuery.trim() && translatedQuery.trim()
+            ? {
+                nl_query: naturalQuery.trim(),
+                translated_query: translatedQuery.trim(),
+                persist_history: true,
+              }
+            : {}),
           limit: pageSize,
           offset: Math.max(0, (nextPage - 1) * pageSize),
         },
@@ -199,6 +301,9 @@ export default function Dashboard() {
       setAlerts(items)
       setSelectedAlert(items[0] ?? null)
       setExplanation(items[0] ? 'Use the AI explain button to summarize the selected alert.' : 'No alerts available.')
+      if (persistHistory) {
+        await loadSearchHistory()
+      }
       if (response.data?.data?.source === 'cache') {
         setError(`Live Wazuh unavailable. Showing cached alerts. ${response.data?.data?.message ?? ''}`.trim())
       }
@@ -240,8 +345,27 @@ export default function Dashboard() {
   }
 
   useEffect(() => {
-    Promise.all([loadAlerts('', 1), loadSummary('')])
+    Promise.all([loadAlerts('', 1), loadSummary(''), loadSearchHistory()])
   }, [])
+
+  useEffect(() => {
+    if (!hasMountedDateSync.current) {
+      hasMountedDateSync.current = true
+      return
+    }
+    if (!hasValidTimeRange(timeFilter)) return
+    Promise.all([loadAlerts(activeBaseQuery, 1), loadSummary(activeBaseQuery)])
+  }, [timeFilter.startDateTime, timeFilter.endDateTime])
+
+  function applyHistorySearch(historyId) {
+    const selected = searchHistory.find((item) => String(item.id) === String(historyId))
+    if (!selected) return
+    const generated = (selected.dql_translation || selected.query || '').trim()
+    if (generated) {
+      setTranslation(generated)
+      setSearch(selected.query || '')
+    }
+  }
 
   async function translateQuery() {
     setBusy(true)
@@ -252,14 +376,9 @@ export default function Dashboard() {
       setTranslation(translatedQuery || 'No translation returned.')
       setTranslationMeta({
         language: response.data?.language ?? 'dql',
-        confidence: typeof response.data?.confidence === 'number' ? response.data.confidence : null,
         timeRange: response.data?.time_range ?? 'unspecified',
         notes: response.data?.notes ?? '',
       })
-      const inferredFilter = parseTranslationTimeRange(response.data?.time_range, search)
-      if (inferredFilter) {
-        setTimeFilter((previous) => ({ ...previous, ...inferredFilter }))
-      }
       return translatedQuery
     } catch (err) {
       if (err?.code === 'ECONNABORTED') {
@@ -278,23 +397,130 @@ export default function Dashboard() {
     await translateQuery()
   }
 
-  async function handleTranslateAndSearch() {
-    const translated = await translateQuery()
-    if (!translated) return
-    await Promise.all([loadAlerts(translated, 1), loadSummary(translated)])
-  }
-
   async function runTranslatedSearch() {
     const cleaned = (translation || '').trim()
     if (!cleaned) {
       setError('Please translate first or enter a query to search.')
       return
     }
-    await Promise.all([loadAlerts(cleaned, 1), loadSummary(cleaned)])
+    await Promise.all([
+      loadAlerts(cleaned, 1, {
+        persistHistory: true,
+        naturalQuery: search,
+        translatedQuery: cleaned,
+      }),
+      loadSummary(cleaned),
+    ])
   }
 
-  async function applyTimeFilter() {
-    await Promise.all([loadAlerts(activeBaseQuery, 1), loadSummary(activeBaseQuery)])
+  function goToPreviousMonth() {
+    setCalendarView((previous) => {
+      if (previous.month === 0) {
+        return { month: 11, year: previous.year - 1 }
+      }
+      return { month: previous.month - 1, year: previous.year }
+    })
+  }
+
+  function goToNextMonth() {
+    setCalendarView((previous) => {
+      if (previous.month === 11) {
+        return { month: 0, year: previous.year + 1 }
+      }
+      return { month: previous.month + 1, year: previous.year }
+    })
+  }
+
+  function handleCalendarDateSelect(day) {
+    if (!day) return
+
+    const selectedValue = setDateWithHour(
+      calendarView.year,
+      calendarView.month,
+      day,
+      calendarStage === 'start' ? extractHour(timeFilter.startDateTime) : extractHour(timeFilter.endDateTime),
+    )
+
+    if (calendarStage === 'start') {
+      setTimeFilter((previous) => {
+        const currentEnd = previous.endDateTime ? new Date(previous.endDateTime) : null
+        const selected = new Date(selectedValue)
+        if (currentEnd && selected.getTime() > currentEnd.getTime()) {
+          return { ...previous, startDateTime: selectedValue, endDateTime: selectedValue }
+        }
+        return { ...previous, startDateTime: selectedValue }
+      })
+      setCalendarStage('end')
+      return
+    }
+
+    setTimeFilter((previous) => {
+      const currentStart = previous.startDateTime ? new Date(previous.startDateTime) : null
+      const selected = new Date(selectedValue)
+      if (currentStart && selected.getTime() < currentStart.getTime()) {
+        return { ...previous, startDateTime: selectedValue, endDateTime: previous.startDateTime }
+      }
+      return { ...previous, endDateTime: selectedValue }
+    })
+    setCalendarStage('start')
+    setShowCalendar(false)
+    setManualDateEntry(false)
+  }
+
+  function isEndSelectionBlocked(day) {
+    if (calendarStage !== 'end' || !startDate || !day) return false
+    const candidate = new Date(calendarView.year, calendarView.month, day)
+    const startFloor = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate())
+    return candidate.getTime() < startFloor.getTime()
+  }
+
+  function openCalendarFromStart() {
+    setCalendarStage('start')
+    setShowCalendar((previous) => {
+      const next = !previous
+      if (!next) {
+        setManualDateEntry(false)
+      }
+      return next
+    })
+  }
+
+  function openManualDateEntry(event) {
+    event.preventDefault()
+    setCalendarStage('start')
+    setShowCalendar(true)
+    setManualDateEntry(true)
+  }
+
+  function handleHourChange(type, hourValue) {
+    const hour = String(hourValue).padStart(2, '0')
+    const key = type === 'start' ? 'startDateTime' : 'endDateTime'
+
+    setTimeFilter((previous) => {
+      const current = previous[key]
+      if (!current) return previous
+      const [datePart] = current.split('T')
+      return { ...previous, [key]: `${datePart}T${hour}:00` }
+    })
+  }
+
+  function isInSelectedRange(day) {
+    if (!startDate || !endDate || !day) return false
+    const date = new Date(calendarView.year, calendarView.month, day)
+    const min = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate()).getTime()
+    const max = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate()).getTime()
+    const current = date.getTime()
+    return current >= min && current <= max
+  }
+
+  function isRangeStart(day) {
+    if (!startDate || !day) return false
+    return day === startDate.getDate() && calendarView.month === startDate.getMonth() && calendarView.year === startDate.getFullYear()
+  }
+
+  function isRangeEnd(day) {
+    if (!endDate || !day) return false
+    return day === endDate.getDate() && calendarView.month === endDate.getMonth() && calendarView.year === endDate.getFullYear()
   }
 
   async function goToNextPage() {
@@ -342,11 +568,11 @@ export default function Dashboard() {
 
   const cards = useMemo(
     () => [
-      { label: 'Active alerts', value: metrics.total, hint: 'From Wazuh Indexer' },
-      { label: 'Low severity', value: metrics.low, hint: 'Rule level 0-6' },
-      { label: 'Medium severity', value: metrics.medium, hint: 'Rule level 7-11' },
-      { label: 'High severity', value: metrics.high, hint: 'Rule level 12-14' },
-      { label: 'Critical severity', value: metrics.critical, hint: 'Rule level 15+' },
+      { label: 'Active alerts', value: metrics.total, tone: 'total' },
+      { label: 'Low severity', value: metrics.low, tone: 'low' },
+      { label: 'Medium severity', value: metrics.medium, tone: 'medium' },
+      { label: 'High severity', value: metrics.high, tone: 'high' },
+      { label: 'Critical severity', value: metrics.critical, tone: 'critical' },
     ],
     [metrics],
   )
@@ -357,134 +583,164 @@ export default function Dashboard() {
     return flattenObjectEntries(fullDoc).filter((entry) => entry.key !== '_source')
   }, [selectedAlert])
 
-  const calendarClause = useMemo(() => buildCalendarClause(timeFilter), [timeFilter])
-  const timeRangeLabel = useMemo(() => {
-    if (timeFilter.mode === 'all') return 'All time'
-    if (timeFilter.mode === 'custom' && timeFilter.startDate && timeFilter.endDate) return `${timeFilter.startDate} to ${timeFilter.endDate}`
-    if (timeFilter.mode === 'relative') {
-      const unitLabel = timeFilter.unit === 'hours' ? 'hours' : timeFilter.unit === 'months' ? 'months' : timeFilter.unit === 'years' ? 'years' : 'days'
-      return `Last ${timeFilter.value} ${unitLabel}`
-    }
-    return 'Custom'
-  }, [timeFilter])
-
   return (
     <AppLayout>
       <div id="dashboard">
-        <header className="hero">
-          <div>
-            <span className="eyebrow">Security Operations Platform</span>
-            <h1>Turn Wazuh alerts into action with AI.</h1>
-            <p className="lead">Search in plain English, generate explanations, and investigate live alerts from one place.</p>
-          </div>
-          <div className="hero-card hero-logo-card">
-            <img src="/octopus-logo.png" alt="Octopus logo" className="hero-logo" />
-          </div>
-        </header>
-
         <section className="metrics-grid">
           {cards.map((card) => <MetricCard key={card.label} {...card} />)}
         </section>
 
         <section className="panel hunt-panel" id="hunt">
           <div className="panel-header">
-            <h2>Natural language search</h2>
-            <button type="button" disabled={busy} onClick={handleTranslateAndSearch}>{busy ? 'Working…' : 'Translate & Search'}</button>
+            <div className="search-title-wrap">
+              <h2>Search</h2>
+              <span className="search-help" tabIndex={0} aria-label="Search usage help">
+                !
+                <span className="search-help-tooltip">
+                  Write your request in natural language, generate a query, review it, then run search.
+                </span>
+              </span>
+            </div>
           </div>
 
-          <div className="hunt-grid">
-            <div className="search-stack">
-              <SearchBar value={search} onChange={setSearch} onTranslate={handleTranslateOnly} busy={busy} />
-              <div className="translation-box">
-                <span className="muted small">Translated {translationMeta.language.toUpperCase()}</span>
+          <div className="search-console">
+            <div className="search-console-grid">
+              <div className="search-console-input-wrap">
+                <input
+                  id="nl-search"
+                  type="text"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder={exampleText || ' '}
+                  className="nl-search-input"
+                />
+              </div>
+              <div className="search-console-actions">
+                <button type="button" className="generate-query-btn" disabled={busy} onClick={handleTranslateOnly}>
+                  {busy ? 'Generating…' : 'Generate Query'}
+                </button>
+              </div>
+
+              <div className="search-console-query-wrap">
                 <textarea
                   rows={2}
                   value={translation}
                   onChange={(event) => setTranslation(event.target.value)}
-                  className="code-input"
-                  placeholder="Waiting for translation..."
+                  className="code-input generated-query-box"
+                  placeholder="Generated query appears here"
                 />
-                <span className="muted small">
-                  Confidence: {translationMeta.confidence !== null ? Math.round(translationMeta.confidence * 100) : '—'}%
-                  {' · '}Time range: {translationMeta.timeRange || 'unspecified'}
-                </span>
-                {translationMeta.notes ? <span className="muted small">Note: {translationMeta.notes}</span> : null}
-                <div className="search-row">
-                  <button type="button" className="secondary-button" onClick={runTranslatedSearch} disabled={busy || loading || !translation.trim()}>
-                    Search translated query
-                  </button>
-                  <button type="button" className="secondary-button" onClick={() => setTranslation('')} disabled={busy || loading}>
-                    Clear translation
-                  </button>
-                  <span className="muted small">Active filter: {activeQuery || 'match all alerts'}</span>
-                </div>
               </div>
             </div>
 
-            <aside className="calendar-panel">
-              <div className="panel-header">
-                <h3>Date range</h3>
-                <span className="pill">{timeRangeLabel}</span>
-              </div>
-              <div className="calendar-mode-strip">
-                {getIntervalOptions().map((option) => (
-                  <button
-                    key={option.key}
-                    type="button"
-                    className={timeFilter.mode === option.key || timeFilter.preset === option.key ? 'mode-pill active' : 'mode-pill'}
-                    onClick={() => applyCalendarMode(option.key)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
+            <div className="search-console-footer">
+              <div className="search-footer-field">
+                <select className="history-dropdown" id="history-select" defaultValue="" onChange={(event) => applyHistorySearch(event.target.value)}>
+                  <option value="">History</option>
+                  {searchHistory.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {new Date(item.created_at).toLocaleString()} · {item.query}
+                    </option>
+                  ))}
+                </select>
               </div>
 
-              {timeFilter.mode === 'relative' ? (
-                <div className="calendar-row">
-                  <input
-                    type="number"
-                    min="1"
-                    value={timeFilter.value}
-                    onChange={(event) => setTimeFilter((previous) => ({ ...previous, value: event.target.value }))}
-                    className="time-input"
-                  />
-                  <select value={timeFilter.unit} onChange={(event) => setTimeFilter((previous) => ({ ...previous, unit: event.target.value }))}>
-                    <option value="hours">Hours</option>
-                    <option value="days">Days</option>
-                    <option value="months">Months</option>
-                    <option value="years">Years</option>
-                  </select>
-                </div>
-              ) : null}
+              <div className="search-footer-spacer" aria-hidden="true" />
 
-              {timeFilter.mode === 'custom' ? (
-                <div className="calendar-row calendar-range-row">
-                  <label>
-                    <span className="muted small">From</span>
-                    <input
-                      type="datetime-local"
-                      value={timeFilter.startDate}
-                      onChange={(event) => setTimeFilter((previous) => ({ ...previous, startDate: event.target.value }))}
-                    />
-                  </label>
-                  <label>
-                    <span className="muted small">To</span>
-                    <input
-                      type="datetime-local"
-                      value={timeFilter.endDate}
-                      onChange={(event) => setTimeFilter((previous) => ({ ...previous, endDate: event.target.value }))}
-                    />
-                  </label>
-                </div>
-              ) : null}
-
-              <div className="search-row">
-                <button type="button" className="secondary-button" onClick={applyTimeFilter} disabled={loading || busy}>
-                  Apply time filter
+              <div className="calendar-control" ref={calendarRef}>
+                <button type="button" className="calendar-toggle-btn" onClick={openCalendarFromStart} onDoubleClick={openManualDateEntry}>
+                  {startDate ? startDate.toLocaleDateString() : 'Pick Start'} to {endDate ? endDate.toLocaleDateString() : 'Pick End'}
                 </button>
-                <span className="muted small">Filter clause: {calendarClause || 'none'}</span>
+
+                {showCalendar ? (
+                  <div className="calendar-popup" role="dialog" aria-label="Date range picker">
+                    <div className="calendar-header">
+                      <button type="button" onClick={goToPreviousMonth} aria-label="Previous month">&#8249;</button>
+                      <span className="calendar-title">
+                        {new Date(calendarView.year, calendarView.month, 1).toLocaleString(undefined, { month: 'long', year: 'numeric' })}
+                      </span>
+                      <button type="button" onClick={goToNextMonth} aria-label="Next month">&#8250;</button>
+                    </div>
+
+                    <div className="calendar-weekdays">
+                      <span>Sun</span>
+                      <span>Mon</span>
+                      <span>Tue</span>
+                      <span>Wed</span>
+                      <span>Thu</span>
+                      <span>Fri</span>
+                      <span>Sat</span>
+                    </div>
+
+                    <div className="calendar-grid">
+                      {dayCells.map((day, index) => (
+                        <button
+                          key={`${calendarView.year}-${calendarView.month}-${index}`}
+                          type="button"
+                          className={[
+                            'calendar-day',
+                            day ? 'active' : 'empty',
+                            isEndSelectionBlocked(day) ? 'blocked' : '',
+                            isInSelectedRange(day) ? 'in-range' : '',
+                            isRangeStart(day) ? 'range-start' : '',
+                            isRangeEnd(day) ? 'range-end' : '',
+                          ].filter(Boolean).join(' ')}
+                          disabled={!day || isEndSelectionBlocked(day)}
+                          onClick={() => handleCalendarDateSelect(day)}
+                        >
+                          {day || ''}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="calendar-hours">
+                      <label>
+                        Start hour
+                        <select value={String(extractHour(timeFilter.startDateTime)).padStart(2, '0')} onChange={(event) => handleHourChange('start', event.target.value)}>
+                          {Array.from({ length: 24 }, (_, value) => String(value).padStart(2, '0')).map((hour) => (
+                            <option key={`start-${hour}`} value={hour}>{hour}:00</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        End hour
+                        <select value={String(extractHour(timeFilter.endDateTime)).padStart(2, '0')} onChange={(event) => handleHourChange('end', event.target.value)}>
+                          {Array.from({ length: 24 }, (_, value) => String(value).padStart(2, '0')).map((hour) => (
+                            <option key={`end-${hour}`} value={hour}>{hour}:00</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+
+                    {manualDateEntry ? (
+                      <div className="manual-range-entry">
+                        <label>
+                          Start date/time
+                          <input
+                            type="datetime-local"
+                            value={timeFilter.startDateTime}
+                            onChange={(event) => setTimeFilter((previous) => ({ ...previous, startDateTime: event.target.value }))}
+                          />
+                        </label>
+                        <label>
+                          End date/time
+                          <input
+                            type="datetime-local"
+                            value={timeFilter.endDateTime}
+                            onChange={(event) => setTimeFilter((previous) => ({ ...previous, endDateTime: event.target.value }))}
+                          />
+                        </label>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
-            </aside>
+
+              <div className="search-footer-action">
+                <button type="button" className="run-search-btn footer-run-btn" onClick={runTranslatedSearch} disabled={busy || loading || !translation.trim()}>
+                  Run Search
+                </button>
+              </div>
+            </div>
           </div>
         </section>
 

@@ -83,6 +83,9 @@ def _cache_summary(interval: str, alerts: list[Alert]) -> dict:
 @router.get("")
 async def list_alerts(
     query: str | None = None,
+    nl_query: str | None = None,
+    translated_query: str | None = None,
+    persist_history: bool = False,
     limit: int = 100,
     offset: int = 0,
     current_user: User = Depends(get_current_user),
@@ -145,14 +148,17 @@ async def list_alerts(
             "message": external_error,
         }
 
-    db.add(
-        SearchHistory(
-            user_id=current_user.id,
-            query=query or "",
-            dql_translation=query,
-            result_count=int(payload.get("total") or len(items)),
+    cleaned_nl_query = (nl_query or "").strip()
+    cleaned_translated_query = (translated_query or "").strip()
+    if persist_history and cleaned_nl_query and cleaned_translated_query:
+        db.add(
+            SearchHistory(
+                user_id=current_user.id,
+                query=cleaned_nl_query,
+                dql_translation=cleaned_translated_query,
+                result_count=int(payload.get("total") or len(items)),
+            )
         )
-    )
     db.commit()
     return {
         "data": payload,
@@ -183,3 +189,35 @@ async def alerts_summary(
     summary["source"] = "cache"
     summary["message"] = message
     return {"data": summary, "error": 0}
+
+
+@router.get("/history")
+async def alerts_history(
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    safe_limit = max(1, min(limit, 100))
+    rows = (
+        db.query(SearchHistory)
+        .filter(SearchHistory.user_id == current_user.id)
+        .order_by(SearchHistory.created_at.desc())
+        .limit(safe_limit)
+        .all()
+    )
+
+    return {
+        "data": {
+            "items": [
+                {
+                    "id": row.id,
+                    "query": row.query,
+                    "dql_translation": row.dql_translation,
+                    "result_count": row.result_count,
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                }
+                for row in rows
+            ]
+        },
+        "error": 0,
+    }

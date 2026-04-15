@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { NavLink } from 'react-router-dom'
+import { NavLink, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 
 function Icon({ name }) {
@@ -66,9 +66,50 @@ const links = [
 ]
 
 export default function AppLayout({ children }) {
-  const { user, logout } = useAuth()
+  const { user, logout, resetPassword } = useAuth()
+  const location = useLocation()
   const [collapsed, setCollapsed] = useState(true)
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [passwordError, setPasswordError] = useState('')
+  const [passwordMessage, setPasswordMessage] = useState('')
+  const [resetBusy, setResetBusy] = useState(false)
   const shellClassName = useMemo(() => (collapsed ? 'app-shell sidebar-collapsed' : 'app-shell'), [collapsed])
+  const currentPageLabel = useMemo(() => {
+    const matched = links.find((link) => location.pathname.startsWith(link.to))
+    return matched?.label ?? 'Dashboard'
+  }, [location.pathname])
+
+  async function handleResetPassword(event) {
+    event.preventDefault()
+    setPasswordError('')
+    setPasswordMessage('')
+
+    const current = currentPassword.trim()
+    const next = newPassword.trim()
+    if (!current || !next) {
+      setPasswordError('Both password fields are required.')
+      return
+    }
+    if (next.length < 8) {
+      setPasswordError('New password must be at least 8 characters.')
+      return
+    }
+
+    setResetBusy(true)
+    try {
+      await resetPassword(current, next)
+      setCurrentPassword('')
+      setNewPassword('')
+      setPasswordMessage('Password changed successfully.')
+    } catch (err) {
+      setPasswordError(err?.response?.data?.detail ?? 'Unable to change password.')
+    } finally {
+      setResetBusy(false)
+    }
+  }
 
   return (
     <div className={shellClassName}>
@@ -105,21 +146,95 @@ export default function AppLayout({ children }) {
               <strong>{user?.username ?? 'unknown'}</strong>
             </div>
           ) : null}
-          <button type="button" onClick={logout} className="secondary-button" title={collapsed ? 'Logout' : undefined}>
-            {!collapsed ? (
-              'Logout'
-            ) : (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-                <polyline points="16 17 21 12 16 7" />
-                <line x1="21" y1="12" x2="9" y2="12" />
-              </svg>
-            )}
-          </button>
         </div>
       </aside>
 
-      <main className="main-content">{children}</main>
+      <main className="main-content">
+        <header className="top-mini-bar">
+          <div className="top-mini-left">
+            <img src="/octopus-logo.png" alt="Octopus" className="top-mini-logo" />
+            <span className="top-mini-brand">Octopus</span>
+            <span className="top-mini-sep" />
+            <span className="top-mini-page">{currentPageLabel}</span>
+          </div>
+          <div className="top-mini-right">
+            <button type="button" className="icon-chip" aria-label="Notifications" title="Notifications">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              </svg>
+            </button>
+
+            <div className="profile-menu-wrap">
+              <button type="button" className="icon-chip" aria-label="Profile menu" onClick={() => setProfileOpen((value) => !value)}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                  <circle cx="12" cy="7" r="4" />
+                </svg>
+              </button>
+
+              {profileOpen ? (
+                <div className="profile-menu-dropdown">
+                  <div className="profile-menu-user">
+                    <div className="muted small">Signed in as</div>
+                    <strong>{user?.username ?? 'unknown'}</strong>
+                  </div>
+                  <button
+                    type="button"
+                    className="menu-action"
+                    onClick={() => {
+                      setProfileOpen(false)
+                      setPasswordModalOpen(true)
+                      setPasswordError('')
+                      setPasswordMessage('')
+                    }}
+                  >
+                    Reset password
+                  </button>
+                  <button
+                    type="button"
+                    className="menu-action danger"
+                    onClick={async () => {
+                      setProfileOpen(false)
+                      await logout()
+                    }}
+                  >
+                    Log out
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </header>
+
+        {children}
+
+        {passwordModalOpen ? (
+          <div className="modal-backdrop" role="dialog" aria-modal="true">
+            <form className="modal-card" onSubmit={handleResetPassword}>
+              <h3>Reset password</h3>
+              <label>
+                <span className="muted small">Current password</span>
+                <input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
+              </label>
+              <label>
+                <span className="muted small">New password</span>
+                <input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+              </label>
+              {passwordError ? <div className="error-banner">{passwordError}</div> : null}
+              {passwordMessage ? <div className="success-banner">{passwordMessage}</div> : null}
+              <div className="search-row">
+                <button type="button" className="secondary-button" onClick={() => setPasswordModalOpen(false)}>
+                  Cancel
+                </button>
+                <button type="submit" disabled={resetBusy}>
+                  {resetBusy ? 'Saving…' : 'Update password'}
+                </button>
+              </div>
+            </form>
+          </div>
+        ) : null}
+      </main>
     </div>
   )
 }

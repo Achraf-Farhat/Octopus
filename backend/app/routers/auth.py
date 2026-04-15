@@ -4,12 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import create_token, decode_token, verify_password
+from app.core.security import create_token, decode_token, hash_password, verify_password
 from app.db.session import get_db
 from app.deps import get_current_user
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
-from app.schemas.auth import LoginRequest, RefreshRequest, Token
+from app.schemas.auth import ChangePasswordRequest, LoginRequest, RefreshRequest, Token
 from app.schemas.user import UserRead
 from app.services.audit import write_audit_log
 
@@ -127,3 +127,26 @@ def logout(payload: RefreshRequest, request: Request, current_user: User = Depen
 @router.get("/me", response_model=UserRead)
 def read_me(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(payload: ChangePasswordRequest, request: Request, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
+
+    if payload.current_password == payload.new_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password must be different")
+
+    current_user.password_hash = hash_password(payload.new_password)
+    db.add(current_user)
+    db.commit()
+
+    write_audit_log(
+        db,
+        user_id=current_user.id,
+        action="auth.change_password",
+        resource_type="user",
+        resource_id=str(current_user.id),
+        ip_address=request.client.host if request.client else None,
+    )
+    return None

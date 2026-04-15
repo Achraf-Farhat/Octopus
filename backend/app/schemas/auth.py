@@ -16,6 +16,11 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class TokenPayload(BaseModel):
     sub: str | None = None
     typ: str | None = None

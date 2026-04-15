@@ -56,6 +56,12 @@ export function AuthProvider({ children }) {
           setUser(null)
         }
       },
+      async resetPassword(currentPassword, newPassword) {
+        await api.post('/auth/change-password', {
+          current_password: currentPassword,
+          new_password: newPassword,
+        })
+      },
       setUser,
     }),
     [user, loading],
