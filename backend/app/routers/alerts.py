@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -35,6 +35,49 @@ def _serialize_cached_alert(alert: Alert) -> dict:
         "data": {"srcip": alert.src_ip, "dstip": alert.dst_ip},
         "status": alert.status,
     }
+
+
+def _bucket_severity(level: int | None) -> str | None:
+    if level is None:
+        return None
+    if 0 <= level <= 6:
+        return "low"
+    if 7 <= level <= 11:
+        return "medium"
+    if 12 <= level <= 14:
+        return "high"
+    if level >= 15:
+        return "critical"
+    return None
+
+
+def _cache_summary(interval: str, alerts: list[Alert]) -> dict:
+    severity = {"low": 0, "medium": 0, "high": 0, "critical": 0}
+    timeline_map: dict[str, int] = {}
+
+    for alert in alerts:
+        bucket = _bucket_severity(alert.severity if isinstance(alert.severity, int) else None)
+        if bucket:
+            severity[bucket] += 1
+
+        if not alert.timestamp:
+            continue
+        dt = alert.timestamp
+        if interval == "hour":
+            key = dt.strftime("%Y-%m-%dT%H:00:00Z")
+        elif interval == "week":
+            week_start = dt - timedelta(days=dt.weekday())
+            key = week_start.strftime("%Y-%m-%dT00:00:00Z")
+        elif interval == "month":
+            key = dt.strftime("%Y-%m-01T00:00:00Z")
+        elif interval == "year":
+            key = dt.strftime("%Y-01-01T00:00:00Z")
+        else:
+            key = dt.strftime("%Y-%m-%dT00:00:00Z")
+        timeline_map[key] = timeline_map.get(key, 0) + 1
+
+    timeline = [{"timestamp": key, "count": timeline_map[key]} for key in sorted(timeline_map.keys())]
+    return {"total": len(alerts), "severity": severity, "timeline": timeline}
 
 
 @router.get("")
@@ -115,3 +158,28 @@ async def list_alerts(
         "data": payload,
         "error": 0,
     }
+
+
+@router.get("/summary")
+async def alerts_summary(
+    query: str | None = None,
+    interval: str = "day",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    del current_user
+    try:
+        client = WazuhClient()
+        response = await client.get_alerts_summary(dql_query=query, interval=interval)
+        payload = response.get("data", {})
+        return {"data": payload, "error": response.get("error", 0)}
+    except RuntimeError as exc:
+        message = str(exc)
+    except Exception as exc:
+        message = f"Wazuh API request failed: {exc}"
+
+    cached_alerts = db.query(Alert).order_by(Alert.timestamp.desc()).limit(5000).all()
+    summary = _cache_summary(interval, cached_alerts)
+    summary["source"] = "cache"
+    summary["message"] = message
+    return {"data": summary, "error": 0}

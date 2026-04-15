@@ -67,7 +67,7 @@ const links = [
 
 export default function AppLayout({ children }) {
   const { user, logout } = useAuth()
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(true)
   const shellClassName = useMemo(() => (collapsed ? 'app-shell sidebar-collapsed' : 'app-shell'), [collapsed])
 
   return (

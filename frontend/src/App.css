@@ -213,7 +213,7 @@ h1 {
 }
 
 .metrics-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .content-grid {
@@ -271,6 +271,75 @@ h1 {
   margin-top: 1rem;
   display: grid;
   gap: 0.75rem;
+}
+
+.hunt-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.85fr);
+  gap: 1rem;
+  align-items: start;
+  margin-top: 1rem;
+}
+
+.search-stack,
+.calendar-panel {
+  display: grid;
+  gap: 0.9rem;
+  min-width: 0;
+}
+
+.calendar-panel {
+  padding: 1rem;
+  border-radius: 1.1rem;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(6, 11, 22, 0.55);
+}
+
+.calendar-mode-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.mode-pill {
+  border-radius: 999px;
+  padding: 0.55rem 0.85rem;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(15, 23, 42, 0.45);
+  color: #cbd5e1;
+}
+
+.mode-pill.active {
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.85), rgba(124, 58, 237, 0.75));
+  color: #f8fafc;
+  border-color: rgba(96, 165, 250, 0.45);
+}
+
+.calendar-row,
+.calendar-range-row {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.calendar-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.calendar-range-row label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.time-filter-row {
+  margin-top: 0.85rem;
+  padding: 0.65rem 0.8rem;
+  border-radius: 0.85rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(6, 11, 22, 0.7);
+}
+
+.time-input {
+  max-width: 110px;
 }
 
 input,
@@ -437,6 +506,58 @@ button {
   border: 1px solid rgba(148, 163, 184, 0.12);
 }
 
+.trend-chart-wrap {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.trend-chart-area {
+  position: relative;
+}
+
+.trend-chart {
+  width: 100%;
+  height: auto;
+  min-height: 290px;
+}
+
+.axis-line {
+  stroke: rgba(148, 163, 184, 0.45);
+  stroke-width: 1.2;
+}
+
+.axis-label {
+  fill: #94a3b8;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.trend-line {
+  fill: none;
+  stroke: #67e8f9;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 10px rgba(103, 232, 249, 0.45));
+}
+
+.trend-node {
+  fill: #67e8f9;
+  opacity: 0.88;
+  cursor: pointer;
+}
+
+.trend-tooltip {
+  margin-top: 0.45rem;
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid rgba(103, 232, 249, 0.32);
+  border-radius: 0.7rem;
+  background: rgba(4, 12, 24, 0.92);
+  width: fit-content;
+}
+
 .error-banner {
   margin-top: 1rem;
   padding: 0.9rem 1rem;
@@ -505,7 +626,9 @@ th {
   .app-shell,
   .hero,
   .content-grid,
-  .metrics-grid {
+  .metrics-grid,
+  .hunt-grid,
+  .calendar-row {
     grid-template-columns: 1fr;
   }
 
@@ -517,6 +640,10 @@ th {
 
 @media (max-width: 1450px) {
   .content-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hunt-grid {
     grid-template-columns: 1fr;
   }
 }

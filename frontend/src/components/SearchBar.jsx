@@ -14,7 +14,7 @@ export default function SearchBar({ value, onChange, onTranslate, busy = false }
           {busy ? 'Translating…' : 'Translate'}
         </button>
       </div>
-      <p className="muted">AI will translate the query to Wazuh DQL and store the search history.</p>
+      <p className="muted">AI translates to Wazuh query syntax so you can review/edit it before running search.</p>
     </div>
   )
 }
