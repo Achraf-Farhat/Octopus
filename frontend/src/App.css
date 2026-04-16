@@ -127,7 +127,7 @@
   justify-items: center;
 }
 
-.sidebar-collapsed .secondary-button {
+.sidebar-collapsed .sidebar-footer .secondary-button {
   padding: 0.65rem;
   width: 2.25rem;
   height: 2.25rem;
@@ -611,11 +611,14 @@ button {
 .table-wrap {
   overflow: auto;
   max-width: 100%;
+  overflow-x: hidden;
+  overflow-y: hidden;
 }
 
 .alerts-table {
   table-layout: fixed;
-  min-width: 820px;
+  width: 100%;
+  min-width: 100%;
 }
 
 .alerts-table th,
@@ -623,14 +626,64 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  padding: 0.68rem 0.48rem;
+  font-size: 0.88rem;
+}
+
+.alerts-table th:nth-child(1),
+.alerts-table td:nth-child(1) {
+  width: 44%;
+  min-width: 0;
+}
+
+.alerts-table th:nth-child(2),
+.alerts-table td:nth-child(2) {
+  width: 26%;
+  min-width: 0;
+}
+
+.alerts-table th:nth-child(3),
+.alerts-table td:nth-child(3) {
+  width: 12%;
+  min-width: 0;
+}
+
+.alerts-table th:nth-child(4),
+.alerts-table td:nth-child(4) {
+  width: 18%;
+  min-width: 0;
+}
+
+.severity-value {
+  font-weight: 700;
+}
+
+.severity-value.severity-low {
+  color: #22c55e;
+}
+
+.severity-value.severity-medium {
+  color: #f59e0b;
+}
+
+.severity-value.severity-high {
+  color: #f97316;
+}
+
+.severity-value.severity-critical {
+  color: #ef4444;
+}
+
+.alert-row:hover {
+  filter: brightness(1.08);
 }
 
 .selected-row {
-  background: rgba(59, 130, 246, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.55);
 }
 
 .selected-row:hover {
-  background: rgba(59, 130, 246, 0.18);
+  filter: brightness(1.12);
 }
 
 .stacked-panel {
