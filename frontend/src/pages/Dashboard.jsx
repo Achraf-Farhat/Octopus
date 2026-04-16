@@ -237,6 +237,8 @@ function aggregateAlertsByGranularity(alertItems, granularity, rangeStart, range
 }
 
 export default function Dashboard() {
+  const MIN_ALERTS_PANE_WIDTH = 36
+  const MAX_ALERTS_PANE_WIDTH = 68
   const dynamicExamples = useMemo(
     () => ['Today\'s alerts', 'Alerts from this IP address', 'Critical alerts from last 6 hours', 'Failed SSH logins this week'],
     [],
@@ -272,6 +274,7 @@ export default function Dashboard() {
   const [calendarStage, setCalendarStage] = useState('start')
   const [manualDateEntry, setManualDateEntry] = useState(false)
   const [chartPanelHeight, setChartPanelHeight] = useState(null)
+  const [alertsPaneWidth, setAlertsPaneWidth] = useState(52)
   const [calendarView, setCalendarView] = useState(() => {
     const now = new Date()
     return { month: now.getMonth(), year: now.getFullYear() }
@@ -279,6 +282,8 @@ export default function Dashboard() {
   const hasMountedDateSync = useRef(false)
   const calendarRef = useRef(null)
   const huntPanelRef = useRef(null)
+  const contentGridRef = useRef(null)
+  const isResizingContentRef = useRef(false)
 
   const dayCells = useMemo(() => getCalendarDays(calendarView.year, calendarView.month), [calendarView.month, calendarView.year])
 
@@ -977,6 +982,37 @@ export default function Dashboard() {
 
   const hasCopiedJson = copyState === 'Copied'
 
+  function clampPaneWidth(value) {
+    return Math.max(MIN_ALERTS_PANE_WIDTH, Math.min(MAX_ALERTS_PANE_WIDTH, value))
+  }
+
+  function stopContentResize() {
+    isResizingContentRef.current = false
+    document.body.classList.remove('resizing-columns')
+    window.removeEventListener('mousemove', handleContentResize)
+    window.removeEventListener('mouseup', stopContentResize)
+  }
+
+  function handleContentResize(event) {
+    if (!isResizingContentRef.current) return
+    const bounds = contentGridRef.current?.getBoundingClientRect()
+    if (!bounds || bounds.width <= 0) return
+
+    const ratio = ((event.clientX - bounds.left) / bounds.width) * 100
+    setAlertsPaneWidth(clampPaneWidth(ratio))
+  }
+
+  function startContentResize(event) {
+    if (window.innerWidth <= 1450) return
+    event.preventDefault()
+    isResizingContentRef.current = true
+    document.body.classList.add('resizing-columns')
+    window.addEventListener('mousemove', handleContentResize)
+    window.addEventListener('mouseup', stopContentResize)
+  }
+
+  useEffect(() => () => stopContentResize(), [])
+
   return (
     <AppLayout>
       <div id="dashboard">
@@ -1151,7 +1187,12 @@ export default function Dashboard() {
 
         {error ? <div className="error-banner">{error}</div> : null}
 
-        <div className="content-grid" id="alerts">
+        <div
+          className="content-grid resizable-content-grid"
+          id="alerts"
+          ref={contentGridRef}
+          style={{ '--alerts-pane-width': `${alertsPaneWidth}%` }}
+        >
           <div className="stacked-panel">
             <AlertTable alerts={alerts} loading={loading} selectedId={selectedAlert?.id} onSelectAlert={setSelectedAlert} />
             <div className="panel-header">
@@ -1168,6 +1209,14 @@ export default function Dashboard() {
               </div>
             </div>
           </div>
+
+          <div
+            className="content-resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize alerts and details panels"
+            onMouseDown={startContentResize}
+          />
 
           <div className="stacked-panel" id="ai">
             <AIExplanation explanation={explanation} onExplain={explainSelectedAlert} busy={busy} selectedAlert={selectedAlert} />
