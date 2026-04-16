@@ -27,7 +27,7 @@ function getTimelineInterval(timeFilter) {
   if (start.getTime() > end.getTime()) return 'month'
 
   const diffHours = (end.getTime() - start.getTime()) / 36e5
-  if (diffHours <= 48) return 'hour'
+  if (diffHours <= 24) return 'hour'
   if (diffHours <= 24 * 90) return 'day'
   if (diffHours <= 24 * 365 * 2) return 'week'
   return 'month'
@@ -152,6 +152,90 @@ function setDateWithHour(year, month, day, hour) {
   return toLocalDateTimeValue(new Date(year, month, day, hour, 0, 0, 0))
 }
 
+function getNextChartGranularity(granularity) {
+  if (granularity === 'month') return 'day'
+  if (granularity === 'week') return 'day'
+  if (granularity === 'day') return 'hour'
+  if (granularity === 'hour') return 'minute'
+  if (granularity === 'minute') return 'second'
+  if (granularity === 'second') return 'millisecond'
+  return null
+}
+
+function getZoomWindow(timestamp, granularity) {
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return null
+
+  const start = new Date(date)
+  const end = new Date(date)
+
+  if (granularity === 'month') {
+    start.setDate(1)
+    start.setHours(0, 0, 0, 0)
+    end.setMonth(end.getMonth() + 1, 0)
+    end.setHours(23, 59, 59, 999)
+    return { start, end }
+  }
+
+  if (granularity === 'week') {
+    start.setHours(0, 0, 0, 0)
+    end.setHours(23, 59, 59, 999)
+    end.setDate(end.getDate() + 6)
+    return { start, end }
+  }
+
+  if (granularity === 'day') {
+    start.setHours(0, 0, 0, 0)
+    end.setHours(23, 59, 59, 999)
+    return { start, end }
+  }
+
+  if (granularity === 'hour') {
+    start.setMinutes(0, 0, 0)
+    end.setMinutes(59, 59, 999)
+    return { start, end }
+  }
+
+  if (granularity === 'minute') {
+    start.setSeconds(0, 0)
+    end.setSeconds(59, 999)
+    return { start, end }
+  }
+
+  if (granularity === 'second') {
+    start.setMilliseconds(0)
+    end.setMilliseconds(999)
+    return { start, end }
+  }
+
+  return null
+}
+
+function aggregateAlertsByGranularity(alertItems, granularity, rangeStart, rangeEnd) {
+  const grouped = new Map()
+
+  for (const alert of alertItems) {
+    const value = alert?.timestamp
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) continue
+    if (date.getTime() < rangeStart.getTime() || date.getTime() > rangeEnd.getTime()) continue
+
+    const bucket = new Date(date)
+    if (granularity === 'minute') {
+      bucket.setSeconds(0, 0)
+    } else if (granularity === 'second') {
+      bucket.setMilliseconds(0)
+    }
+
+    const key = bucket.getTime()
+    grouped.set(key, (grouped.get(key) || 0) + 1)
+  }
+
+  return Array.from(grouped.entries())
+    .sort((first, second) => first[0] - second[0])
+    .map(([epoch, count]) => ({ timestamp: new Date(epoch).toISOString(), count }))
+}
+
 export default function Dashboard() {
   const dynamicExamples = useMemo(
     () => ['Today\'s alerts', 'Alerts from this IP address', 'Critical alerts from last 6 hours', 'Failed SSH logins this week'],
@@ -173,6 +257,10 @@ export default function Dashboard() {
   const [totalAlerts, setTotalAlerts] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(100)
+  const [chartZoomStack, setChartZoomStack] = useState([])
+  const [chartGranularity, setChartGranularity] = useState(getTimelineInterval(getDefaultTimeFilter()))
+  const [chartRange, setChartRange] = useState(getDefaultTimeFilter)
+  const [chartZoomLabel, setChartZoomLabel] = useState('')
   const [activeBaseQuery, setActiveBaseQuery] = useState('')
   const [activeQuery, setActiveQuery] = useState('')
   const [searchHistory, setSearchHistory] = useState([])
@@ -183,12 +271,14 @@ export default function Dashboard() {
   const [showCalendar, setShowCalendar] = useState(false)
   const [calendarStage, setCalendarStage] = useState('start')
   const [manualDateEntry, setManualDateEntry] = useState(false)
+  const [chartPanelHeight, setChartPanelHeight] = useState(null)
   const [calendarView, setCalendarView] = useState(() => {
     const now = new Date()
     return { month: now.getMonth(), year: now.getFullYear() }
   })
   const hasMountedDateSync = useRef(false)
   const calendarRef = useRef(null)
+  const huntPanelRef = useRef(null)
 
   const dayCells = useMemo(() => getCalendarDays(calendarView.year, calendarView.month), [calendarView.month, calendarView.year])
 
@@ -248,6 +338,27 @@ export default function Dashboard() {
     document.addEventListener('mousedown', handleOutsideClick)
     return () => document.removeEventListener('mousedown', handleOutsideClick)
   }, [showCalendar])
+
+  useEffect(() => {
+    const panel = huntPanelRef.current
+    if (!panel) return undefined
+
+    const syncHeight = () => {
+      const measured = Math.round(panel.getBoundingClientRect().height)
+      if (measured > 0) setChartPanelHeight(measured)
+    }
+
+    syncHeight()
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(syncHeight)
+      observer.observe(panel)
+      return () => observer.disconnect()
+    }
+
+    window.addEventListener('resize', syncHeight)
+    return () => window.removeEventListener('resize', syncHeight)
+  }, [])
 
   async function loadSearchHistory() {
     try {
@@ -315,33 +426,65 @@ export default function Dashboard() {
     }
   }
 
-  async function loadSummary(baseQuery) {
+  async function loadSummary(baseQuery, options = {}) {
+    const {
+      filterOverride = null,
+      intervalOverride = null,
+      preserveMetrics = false,
+      updateChartState = true,
+    } = options
     const finalBaseQuery = baseQuery ?? ''
-    const combinedQuery = mergeQuery(finalBaseQuery, buildCalendarClause(timeFilter))
+    const effectiveFilter = filterOverride ?? timeFilter
+    const combinedQuery = mergeQuery(finalBaseQuery, buildCalendarClause(effectiveFilter))
     try {
       const response = await api.get('/alerts/summary', {
         params: {
           ...(combinedQuery ? { query: combinedQuery } : {}),
-          interval: getTimelineInterval(timeFilter),
+          interval: intervalOverride ?? getTimelineInterval(effectiveFilter),
         },
       })
       const data = response.data?.data ?? {}
       const severity = data?.severity ?? {}
-      setMetrics({
-        total: Number(data?.total ?? 0) || 0,
-        low: Number(severity.low ?? 0) || 0,
-        medium: Number(severity.medium ?? 0) || 0,
-        high: Number(severity.high ?? 0) || 0,
-        critical: Number(severity.critical ?? 0) || 0,
-      })
-      setTrendPoints(Array.isArray(data?.timeline) ? data.timeline : [])
+      if (!preserveMetrics) {
+        setMetrics({
+          total: Number(data?.total ?? 0) || 0,
+          low: Number(severity.low ?? 0) || 0,
+          medium: Number(severity.medium ?? 0) || 0,
+          high: Number(severity.high ?? 0) || 0,
+          critical: Number(severity.critical ?? 0) || 0,
+        })
+      }
+      const timeline = Array.isArray(data?.timeline) ? data.timeline : []
+      setTrendPoints(timeline)
+      if (updateChartState) {
+        setChartGranularity(intervalOverride ?? getTimelineInterval(effectiveFilter))
+        setChartRange({
+          startDateTime: effectiveFilter.startDateTime,
+          endDateTime: effectiveFilter.endDateTime,
+        })
+      }
       if (data?.source === 'cache') {
         setError(`Live Wazuh unavailable. Showing cached summary. ${data?.message ?? ''}`.trim())
       }
     } catch {
-      setMetrics({ total: 0, low: 0, medium: 0, high: 0, critical: 0 })
+      if (!preserveMetrics) {
+        setMetrics({ total: 0, low: 0, medium: 0, high: 0, critical: 0 })
+      }
       setTrendPoints([])
     }
+  }
+
+  async function loadAlertsForRange(baseQuery, filter, limit = 2000) {
+    const finalBaseQuery = baseQuery ?? ''
+    const combinedQuery = mergeQuery(finalBaseQuery, buildCalendarClause(filter))
+    const response = await api.get('/alerts', {
+      params: {
+        ...(combinedQuery ? { query: combinedQuery } : {}),
+        limit,
+        offset: 0,
+      },
+    })
+    return (response.data?.data?.items ?? []).map(normalizeAlert)
   }
 
   useEffect(() => {
@@ -354,6 +497,8 @@ export default function Dashboard() {
       return
     }
     if (!hasValidTimeRange(timeFilter)) return
+    setChartZoomStack([])
+    setChartZoomLabel('')
     Promise.all([loadAlerts(activeBaseQuery, 1), loadSummary(activeBaseQuery)])
   }, [timeFilter.startDateTime, timeFilter.endDateTime])
 
@@ -403,6 +548,8 @@ export default function Dashboard() {
       setError('Please translate first or enter a query to search.')
       return
     }
+    setChartZoomStack([])
+    setChartZoomLabel('')
     await Promise.all([
       loadAlerts(cleaned, 1, {
         persistHistory: true,
@@ -411,6 +558,72 @@ export default function Dashboard() {
       }),
       loadSummary(cleaned),
     ])
+  }
+
+  async function handleChartBarClick(point, granularity) {
+    if (!point?.timestamp) return
+    const nextGranularity = getNextChartGranularity(granularity)
+    if (!nextGranularity) return
+
+    const window = getZoomWindow(point.timestamp, granularity)
+    if (!window) return
+
+    const nextFilter = {
+      startDateTime: toLocalDateTimeValue(window.start),
+      endDateTime: toLocalDateTimeValue(window.end),
+    }
+
+    setChartZoomStack((previous) => [
+      ...previous,
+      {
+        points: trendPoints,
+        granularity: chartGranularity,
+        range: chartRange,
+        label: chartZoomLabel,
+      },
+    ])
+
+    setChartZoomLabel(
+      nextGranularity === 'hour'
+        ? window.start.toLocaleDateString()
+        : nextGranularity === 'minute'
+          ? `${window.start.toLocaleDateString()} ${window.start.toLocaleTimeString([], { hour: '2-digit' })}`
+          : nextGranularity === 'second'
+            ? window.start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : `${window.start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+    )
+
+    if (nextGranularity === 'day' || nextGranularity === 'hour') {
+      await loadSummary(activeBaseQuery, {
+        filterOverride: nextFilter,
+        intervalOverride: nextGranularity,
+        preserveMetrics: true,
+      })
+      return
+    }
+
+    try {
+      const alertsInWindow = await loadAlertsForRange(activeBaseQuery, nextFilter)
+      const aggregated = aggregateAlertsByGranularity(alertsInWindow, nextGranularity, window.start, window.end)
+      setTrendPoints(aggregated)
+      setChartGranularity(nextGranularity)
+      setChartRange(nextFilter)
+    } catch {
+      setTrendPoints([])
+    }
+  }
+
+  async function resetChartZoom() {
+    setChartZoomStack((previous) => {
+      if (!previous.length) return previous
+      const nextStack = [...previous]
+      const last = nextStack.pop()
+      setTrendPoints(last.points)
+      setChartGranularity(last.granularity)
+      setChartRange(last.range)
+      setChartZoomLabel(last.label)
+      return nextStack
+    })
   }
 
   function goToPreviousMonth() {
@@ -590,7 +803,7 @@ export default function Dashboard() {
           {cards.map((card) => <MetricCard key={card.label} {...card} />)}
         </section>
 
-        <section className="panel hunt-panel" id="hunt">
+        <section className="panel hunt-panel" id="hunt" ref={huntPanelRef}>
           <div className="panel-header">
             <div className="search-title-wrap">
               <h2>Search</h2>
@@ -744,8 +957,15 @@ export default function Dashboard() {
           </div>
         </section>
 
-        <section className="panel">
-          <AlertsTrendChart points={trendPoints} />
+        <section className="panel trend-panel" style={chartPanelHeight ? { height: `${chartPanelHeight}px` } : undefined}>
+          <AlertsTrendChart
+            points={trendPoints}
+            granularity={chartGranularity}
+            isZoomed={chartZoomStack.length > 0}
+            zoomLabel={chartZoomLabel}
+            onBarClick={handleChartBarClick}
+            onResetZoom={resetChartZoom}
+          />
         </section>
 
         {error ? <div className="error-banner">{error}</div> : null}

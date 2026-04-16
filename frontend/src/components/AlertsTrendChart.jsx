@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 function formatTimestamp(value) {
   const date = new Date(value)
@@ -6,36 +6,32 @@ function formatTimestamp(value) {
   return date.toLocaleString()
 }
 
-function formatAxisTimestamp(value) {
+function formatAxisTimestamp(value, granularity) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return String(value)
+  if (granularity === 'hour') return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  if (granularity === 'minute') return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  if (granularity === 'second') return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  if (granularity === 'millisecond') return `${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}.${String(date.getMilliseconds()).padStart(3, '0')}`
   return date.toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
-function createCurvedPath(points) {
-  if (points.length < 2) {
-    return points.length === 1 ? `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}` : ''
+function inferGranularity(items) {
+  if (items.length < 2) return 'day'
+  const deltas = []
+  for (let index = 1; index < items.length; index += 1) {
+    const current = new Date(items[index].timestamp).getTime()
+    const previous = new Date(items[index - 1].timestamp).getTime()
+    if (Number.isFinite(current) && Number.isFinite(previous) && current > previous) {
+      deltas.push(current - previous)
+    }
   }
-
-  const pathParts = [`M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`]
-
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const current = points[index]
-    const next = points[index + 1]
-    const previous = points[index - 1] ?? current
-    const afterNext = points[index + 2] ?? next
-
-    const controlPoint1X = current.x + (next.x - previous.x) / 6
-    const controlPoint1Y = current.y + (next.y - previous.y) / 6
-    const controlPoint2X = next.x - (afterNext.x - current.x) / 6
-    const controlPoint2Y = next.y - (afterNext.y - current.y) / 6
-
-    pathParts.push(
-      `C ${controlPoint1X.toFixed(2)} ${controlPoint1Y.toFixed(2)}, ${controlPoint2X.toFixed(2)} ${controlPoint2Y.toFixed(2)}, ${next.x.toFixed(2)} ${next.y.toFixed(2)}`,
-    )
-  }
-
-  return pathParts.join(' ')
+  if (!deltas.length) return 'day'
+  const avgDelta = deltas.reduce((sum, value) => sum + value, 0) / deltas.length
+  if (avgDelta <= 90 * 60 * 1000) return 'hour'
+  if (avgDelta <= 36 * 60 * 60 * 1000) return 'day'
+  if (avgDelta <= 9 * 24 * 60 * 60 * 1000) return 'week'
+  return 'month'
 }
 
 function buildTicks(maxValue) {
@@ -43,59 +39,138 @@ function buildTicks(maxValue) {
   return [0, 0.25, 0.5, 0.75, 1].map((ratio) => Math.round(safeMax * ratio))
 }
 
-export default function AlertsTrendChart({ points }) {
-  const [hoverIndex, setHoverIndex] = useState(null)
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value))
+}
+
+function getBarFillColor(intensity, active) {
+  if (active) return 'hsla(191, 100%, 72%, 1)'
+  const normalized = clamp(Number.isFinite(intensity) ? intensity : 0, 0, 1)
+  const alpha = 0.2 + normalized * 0.78
+  const saturation = 52 + normalized * 44
+  const lightness = 34 + normalized * 30
+  return `hsla(194, ${saturation}%, ${lightness}%, ${alpha})`
+}
+
+function getBarStrokeColor(intensity, active) {
+  if (active) return 'hsla(190, 100%, 82%, 1)'
+  const normalized = clamp(Number.isFinite(intensity) ? intensity : 0, 0, 1)
+  const alpha = 0.26 + normalized * 0.68
+  const saturation = 58 + normalized * 40
+  const lightness = 40 + normalized * 36
+  return `hsla(197, ${saturation}%, ${lightness}%, ${alpha})`
+}
+
+export default function AlertsTrendChart({ points, granularity = 'day', isZoomed = false, zoomLabel = '', onBarClick, onResetZoom }) {
+  const [hoveredBar, setHoveredBar] = useState(null)
+  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 })
+  const [chartBounds, setChartBounds] = useState({ width: 0, height: 0 })
+  const [tooltipSize, setTooltipSize] = useState({ width: 0, height: 0 })
+  const chartRef = useRef(null)
+  const tooltipRef = useRef(null)
 
   const chart = useMemo(() => {
-    const safePoints = Array.isArray(points) ? points : []
-    const normalized = safePoints
+    const normalized = (Array.isArray(points) ? points : [])
       .map((point) => ({
         timestamp: point?.timestamp,
         count: Number(point?.count ?? 0),
       }))
       .filter((point) => point.timestamp && Number.isFinite(point.count))
 
-    const width = 860
-    const height = 300
-    const padding = { top: 16, right: 24, bottom: 46, left: 58 }
+    const width = 900
+    const height = 320
+    const padding = { top: 18, right: 20, bottom: 52, left: 58 }
     const innerWidth = width - padding.left - padding.right
     const innerHeight = height - padding.top - padding.bottom
 
     if (!normalized.length) {
-      return { width, height, points: [], path: '', maxCount: 0, padding, yTicks: [], xTicks: [] }
+      return {
+        width,
+        height,
+        padding,
+        bars: [],
+        yTicks: [],
+        maxCount: 0,
+        granularity: 'day',
+      }
     }
 
+    const resolvedGranularity = granularity || inferGranularity(normalized)
     const maxCount = Math.max(...normalized.map((point) => point.count), 1)
-    const minTime = new Date(normalized[0].timestamp).getTime()
-    const maxTime = new Date(normalized[normalized.length - 1].timestamp).getTime()
-    const timeSpan = Math.max(1, maxTime - minTime)
+    const yTicks = buildTicks(maxCount)
 
-    const scaledPoints = normalized.map((point) => {
-      const xValue = new Date(point.timestamp).getTime()
-      const x = padding.left + ((xValue - minTime) / timeSpan) * innerWidth
-      const y = padding.top + (1 - point.count / maxCount) * innerHeight
-      return { ...point, x, y }
+    const step = innerWidth / Math.max(1, normalized.length)
+    const barWidth = Math.max(8, Math.min(44, step * 0.72))
+
+    const bars = normalized.map((point, index) => {
+      const x = padding.left + index * step + (step - barWidth) / 2
+      const ratio = point.count / maxCount
+      const barHeight = Math.max(2, ratio * innerHeight)
+      const y = padding.top + innerHeight - barHeight
+      return {
+        ...point,
+        index,
+        x,
+        y,
+        barWidth,
+        barHeight,
+        intensity: maxCount > 0 ? Math.log1p(point.count) / Math.log1p(maxCount) : 0,
+      }
     })
 
-    const path = createCurvedPath(scaledPoints)
-    const yTicks = buildTicks(maxCount)
-    const xTickIndexes = [0, Math.floor((scaledPoints.length - 1) / 3), Math.floor((scaledPoints.length - 1) * 2 / 3), scaledPoints.length - 1]
-    const xTicks = Array.from(new Set(xTickIndexes)).map((index) => scaledPoints[index])
+    return { width, height, padding, bars, yTicks, maxCount, granularity: resolvedGranularity }
+  }, [granularity, points])
 
-    return { width, height, points: scaledPoints, path, maxCount, padding, yTicks, xTicks }
-  }, [points])
+  function handleMouseMove(event, bar) {
+    const bounds = chartRef.current?.getBoundingClientRect()
+    if (!bounds) return
+    setChartBounds({ width: bounds.width, height: bounds.height })
+    setHoveredBar(bar)
+    setTooltipPos({
+      x: event.clientX - bounds.left,
+      y: event.clientY - bounds.top,
+    })
+  }
 
-  const hoveredPoint = hoverIndex !== null ? chart.points[hoverIndex] : null
+  function handleMouseLeave() {
+    setHoveredBar(null)
+  }
+
+  useEffect(() => {
+    if (!hoveredBar || !tooltipRef.current) return
+    const bounds = tooltipRef.current.getBoundingClientRect()
+    const width = Math.round(bounds.width)
+    const height = Math.round(bounds.height)
+    setTooltipSize((previous) => {
+      if (previous.width === width && previous.height === height) return previous
+      return { width, height }
+    })
+  }, [hoveredBar, tooltipPos.x, tooltipPos.y])
+
+  const tooltipMaxLeft = Math.max(8, chartBounds.width - tooltipSize.width - 8)
+  const tooltipPreferredTop = tooltipPos.y - tooltipSize.height - 10
+  const tooltipFallbackTop = tooltipPos.y + 12
+  const tooltipMaxTop = Math.max(8, chartBounds.height - tooltipSize.height - 8)
+  const tooltipLeft = clamp(tooltipPos.x + 12, 8, tooltipMaxLeft)
+  const tooltipTop = clamp(tooltipPreferredTop >= 8 ? tooltipPreferredTop : tooltipFallbackTop, 8, tooltipMaxTop)
 
   return (
     <div className="trend-chart-wrap">
       <div className="panel-header">
-        <h2>Alert progression</h2>
-        <span className="muted small">Hover the line for details</span>
+        <h2>Alert chronology</h2>
+        <div className="trend-meta">
+          {isZoomed ? <span className="pill">Zoomed: {zoomLabel}</span> : <span className="muted small">Click bars to drill down timeline</span>}
+          {isZoomed ? (
+            <button type="button" className="secondary-button trend-reset-btn" onClick={onResetZoom}>
+              Reset zoom
+            </button>
+          ) : null}
+        </div>
       </div>
-      {chart.points.length ? (
-        <div className="trend-chart-area">
-          <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="trend-chart" role="img" aria-label="Alert trend chart">
+
+      {chart.bars.length ? (
+        <div className="trend-chart-area" ref={chartRef}>
+          <svg viewBox={`0 0 ${chart.width} ${chart.height}`} preserveAspectRatio="none" className="trend-chart" role="img" aria-label="Alert bar chart">
             <line
               x1={chart.padding.left}
               y1={chart.height - chart.padding.bottom}
@@ -123,40 +198,52 @@ export default function AlertsTrendChart({ points }) {
               )
             })}
 
-            {chart.xTicks.map((point) => (
-              <g key={`xtick-${point.timestamp}`}>
-                <text x={point.x} y={chart.height - 16} textAnchor="middle" className="axis-label">
-                  {formatAxisTimestamp(point.timestamp)}
-                </text>
-              </g>
+            {chart.bars.filter((_, index) => {
+              if (chart.bars.length <= 10) return true
+              const spacing = Math.ceil(chart.bars.length / 6)
+              return index % spacing === 0 || index === chart.bars.length - 1
+            }).map((bar) => (
+              <text key={`xtick-${bar.timestamp}`} x={bar.x + bar.barWidth / 2} y={chart.height - 16} textAnchor="middle" className="axis-label">
+                {formatAxisTimestamp(bar.timestamp, chart.granularity)}
+              </text>
             ))}
 
-            <text x={chart.padding.left + 4} y={chart.padding.top + 10} className="axis-label">
-              Count
-            </text>
-            <text x={chart.width - chart.padding.right - 88} y={chart.height - 10} className="axis-label">
-              Timestamp
-            </text>
+            
 
-            <path d={chart.path} className="trend-line" />
-
-            {chart.points.map((point, index) => (
-              <circle
-                key={`${point.timestamp}-${index}`}
-                cx={point.x}
-                cy={point.y}
-                r={hoverIndex === index ? 4.25 : 2.4}
-                className="trend-node"
-                onMouseEnter={() => setHoverIndex(index)}
-                onMouseLeave={() => setHoverIndex(null)}
-              />
-            ))}
+            {chart.bars.map((bar) => {
+              const active = hoveredBar?.index === bar.index
+              return (
+                <rect
+                  key={`${bar.timestamp}-${bar.index}`}
+                  x={bar.x}
+                  y={bar.y}
+                  width={bar.barWidth}
+                  height={bar.barHeight}
+                  rx={3}
+                  className={`trend-bar ${active ? 'active' : ''} ${chart.granularity !== 'millisecond' ? 'clickable' : ''}`}
+                  style={{
+                    fill: getBarFillColor(bar.intensity, active),
+                    stroke: getBarStrokeColor(bar.intensity, active),
+                  }}
+                  onMouseMove={(event) => handleMouseMove(event, bar)}
+                  onMouseLeave={handleMouseLeave}
+                  onClick={() => onBarClick?.(bar, chart.granularity)}
+                />
+              )
+            })}
           </svg>
 
-          {hoveredPoint ? (
-            <div className="trend-tooltip">
-              <strong>{hoveredPoint.count} alerts</strong>
-              <span className="muted small">{formatTimestamp(hoveredPoint.timestamp)}</span>
+          {hoveredBar ? (
+            <div
+              ref={tooltipRef}
+              className="trend-tooltip"
+              style={{
+                left: `${tooltipLeft}px`,
+                top: `${tooltipTop}px`,
+              }}
+            >
+              <strong>{hoveredBar.count} alerts</strong>
+              <span className="muted small">{formatTimestamp(hoveredBar.timestamp)}</span>
             </div>
           ) : null}
         </div>
