@@ -769,14 +769,39 @@ export default function Dashboard() {
 
   async function copySelectedAlertJson() {
     if (!selectedAlert?.raw) return
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(selectedAlert.raw, null, 2))
-      setCopyState('Copied')
-      setTimeout(() => setCopyState(''), 1500)
-    } catch {
-      setCopyState('Copy failed')
-      setTimeout(() => setCopyState(''), 1500)
+    const jsonText = JSON.stringify(selectedAlert.raw, null, 2)
+
+    async function writeWithFallback(text) {
+      if (navigator?.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(text)
+          return true
+        } catch {
+          // Fallback to legacy copy when Clipboard API is blocked.
+        }
+      }
+
+      try {
+        const textArea = document.createElement('textarea')
+        textArea.value = text
+        textArea.setAttribute('readonly', 'readonly')
+        textArea.style.position = 'fixed'
+        textArea.style.top = '-1000px'
+        textArea.style.left = '-1000px'
+        document.body.appendChild(textArea)
+        textArea.focus()
+        textArea.select()
+        const copied = document.execCommand('copy')
+        document.body.removeChild(textArea)
+        return copied
+      } catch {
+        return false
+      }
     }
+
+    const copied = await writeWithFallback(jsonText)
+    setCopyState(copied ? 'Copied' : 'Copy failed')
+    setTimeout(() => setCopyState(''), 1500)
   }
 
   const cards = useMemo(
@@ -790,11 +815,167 @@ export default function Dashboard() {
     [metrics],
   )
 
+  function formatDetailTimestamp(value) {
+    if (!value) return value
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return value
+    return new Intl.DateTimeFormat('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      fractionalSecondDigits: 3,
+    }).format(date)
+  }
+
+  function organizeAlertDetails(rawAlert) {
+    if (!rawAlert || typeof rawAlert !== 'object') return { main: [], groups: {} }
+    
+    const fullDoc = buildAlertDetailsDocument(rawAlert)
+    const allEntries = flattenObjectEntries(fullDoc).filter((entry) => entry.key !== '_source')
+    
+    const longTextFields = new Set(['full_log', 'previous_log', 'previous_output', 'location', 'decoder.name', 'input.type'])
+    const groups = {
+      agent: [],
+      rule: [],
+      other: [],
+      longText: [],
+    }
+    
+    const fieldOrder = [
+      '_index', '_id', '_version', '_score',
+      'agent.name', 'agent.id',
+      'input.type', 'decoder.name', 'location',
+      'rule.id', 'rule.level', 'rule.description', 'rule.firedtimes',
+      'rule.groups', 'rule.pci_dss', 'rule.hipaa', 'rule.nist_800_53', 'rule.gdpr', 'rule.gpg13', 'rule.tsc', 'rule.mail',
+      '@timestamp', 'timestamp', 'id', 'manager.name', 'sort',
+    ]
+    
+    const otherFields = allEntries.filter(
+      (entry) => !fieldOrder.includes(entry.key) && !longTextFields.has(entry.key)
+    )
+    
+    allEntries.forEach((entry) => {
+      if (longTextFields.has(entry.key)) {
+        groups.longText.push(entry)
+      } else if (entry.key.startsWith('agent.')) {
+        groups.agent.push(entry)
+      } else if (entry.key.startsWith('rule.')) {
+        groups.rule.push(entry)
+      } else if (!fieldOrder.includes(entry.key)) {
+        groups.other.push(entry)
+      }
+    })
+    
+    const main = fieldOrder
+      .map((key) => allEntries.find((e) => e.key === key))
+      .filter(Boolean)
+    
+    return { main, groups: { ...groups, other: otherFields } }
+  }
+
   const selectedDetails = useMemo(() => {
-    if (!selectedAlert?.raw) return []
-    const fullDoc = buildAlertDetailsDocument(selectedAlert.raw)
-    return flattenObjectEntries(fullDoc).filter((entry) => entry.key !== '_source')
+    if (!selectedAlert?.raw) return null
+    return organizeAlertDetails(selectedAlert.raw)
   }, [selectedAlert])
+
+  const selectedRawJsonText = useMemo(
+    () => (selectedAlert?.raw ? JSON.stringify(selectedAlert.raw, null, 2) : ''),
+    [selectedAlert],
+  )
+
+  const selectedRawJsonLines = useMemo(
+    () => (selectedRawJsonText ? selectedRawJsonText.split('\n') : []),
+    [selectedRawJsonText],
+  )
+
+  function tokenizeJsonLine(line) {
+    const tokens = []
+    let index = 0
+
+    function pushToken(text, type = 'plain') {
+      if (text) tokens.push({ text, type })
+    }
+
+    while (index < line.length) {
+      const char = line[index]
+
+      if (/\s/.test(char)) {
+        const start = index
+        while (index < line.length && /\s/.test(line[index])) index += 1
+        pushToken(line.slice(start, index), 'plain')
+        continue
+      }
+
+      if (char === '"') {
+        let end = index + 1
+        let escaped = false
+
+        while (end < line.length) {
+          const nextChar = line[end]
+          if (escaped) {
+            escaped = false
+            end += 1
+            continue
+          }
+          if (nextChar === '\\') {
+            escaped = true
+            end += 1
+            continue
+          }
+          if (nextChar === '"') {
+            end += 1
+            break
+          }
+          end += 1
+        }
+
+        const stringToken = line.slice(index, end)
+        let probe = end
+        while (probe < line.length && /\s/.test(line[probe])) probe += 1
+        const tokenType = line[probe] === ':' ? 'key' : 'string'
+        pushToken(stringToken, tokenType)
+        index = end
+        continue
+      }
+
+      if (/[{}\[\],:]/.test(char)) {
+        pushToken(char, 'punctuation')
+        index += 1
+        continue
+      }
+
+      const remaining = line.slice(index)
+      const numberMatch = remaining.match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/)
+      if (numberMatch) {
+        pushToken(numberMatch[0], 'number')
+        index += numberMatch[0].length
+        continue
+      }
+
+      const literalMatch = remaining.match(/^(true|false|null)\b/)
+      if (literalMatch) {
+        const literal = literalMatch[1]
+        pushToken(literal, literal === 'null' ? 'null' : 'boolean')
+        index += literal.length
+        continue
+      }
+
+      pushToken(char, 'plain')
+      index += 1
+    }
+
+    return tokens
+  }
+
+  const selectedRawJsonTokenLines = useMemo(
+    () => selectedRawJsonLines.map((line) => tokenizeJsonLine(line)),
+    [selectedRawJsonLines],
+  )
+
+  const hasCopiedJson = copyState === 'Copied'
 
   return (
     <AppLayout>
@@ -1006,38 +1187,116 @@ export default function Dashboard() {
                 <p className="muted">No alert selected.</p>
               )}
 
-              {selectedAlert ? (
+              {selectedAlert && selectedDetails ? (
                 <div className="alert-details-block">
-                  <div className="panel-header">
-                    <h3>Alert details</h3>
-                    <span className="muted small">{selectedDetails.length} fields</span>
-                  </div>
-                  <div className="table-wrap">
-                    <table className="details-table">
-                      <thead>
-                        <tr>
-                          <th>Field</th>
-                          <th>Value</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedDetails.map((entry) => (
-                          <tr key={entry.key}>
-                            <td>{entry.key}</td>
-                            <td>{entry.value}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div className="details-section">
+                    <div className="details-grid">
+                      {selectedDetails.main.map((entry) => (
+                        <div key={entry.key} className="detail-row">
+                          <span className="detail-label">{entry.key}</span>
+                          <span className="detail-value">{entry.key.includes('timestamp') || entry.key === '@timestamp' ? formatDetailTimestamp(entry.value) : entry.value}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
 
-                  <div className="panel-header">
+                  {selectedDetails.groups.agent.length > 0 && (
+                    <div className="details-section">
+                      <h4 className="details-group-title">Agent</h4>
+                      <div className="details-grid">
+                        {selectedDetails.groups.agent.map((entry) => (
+                          <div key={entry.key} className="detail-row">
+                            <span className="detail-label">{entry.key.replace('agent.', '')}</span>
+                            <span className="detail-value">{entry.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedDetails.groups.rule.length > 0 && (
+                    <div className="details-section">
+                      <h4 className="details-group-title">Rule</h4>
+                      <div className="details-grid">
+                        {selectedDetails.groups.rule.map((entry) => (
+                          <div key={entry.key} className="detail-row">
+                            <span className="detail-label">{entry.key.replace('rule.', '')}</span>
+                            <span className="detail-value">{entry.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedDetails.groups.longText.length > 0 && (
+                    <div className="details-section">
+                      <h4 className="details-group-title">Content</h4>
+                      {selectedDetails.groups.longText.map((entry) => (
+                        <div key={entry.key} className="detail-long-field">
+                          <span className="detail-label">{entry.key}</span>
+                          <pre className="detail-long-value">{entry.value}</pre>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {selectedDetails.groups.other.length > 0 && (
+                    <div className="details-section">
+                      <h4 className="details-group-title">Other</h4>
+                      <div className="details-grid">
+                        {selectedDetails.groups.other.map((entry) => (
+                          <div key={entry.key} className="detail-row">
+                            <span className="detail-label">{entry.key}</span>
+                            <span className="detail-value">{entry.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="panel-header" style={{ marginTop: '1.5rem' }}>
                     <h3>Raw JSON</h3>
-                    <button type="button" className="secondary-button" onClick={copySelectedAlertJson}>
-                      {copyState || 'Copy JSON'}
+                    <button
+                      type="button"
+                      className={`secondary-button copy-json-btn ${hasCopiedJson ? 'copied' : ''}`.trim()}
+                      onClick={copySelectedAlertJson}
+                      aria-label="Copy JSON"
+                      title={copyState || 'Copy JSON'}
+                    >
+                      {hasCopiedJson ? (
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                          <path d="M9 16.2L4.8 12L3.4 13.4L9 19L21 7L19.6 5.6L9 16.2Z" />
+                        </svg>
+                      ) : (
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                          <path d="M16 1H6C4.9 1 4 1.9 4 3V17H6V3H16V1ZM19 5H10C8.9 5 8 5.9 8 7V21C8 22.1 8.9 23 10 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H10V7H19V21Z" />
+                        </svg>
+                      )}
                     </button>
                   </div>
-                  <pre className="json-viewer">{JSON.stringify(selectedAlert.raw, null, 2)}</pre>
+                  <div className="json-viewer" role="region" aria-label="Raw JSON viewer">
+                    <div className="json-editor-topbar">
+                      <span className="json-dot" />
+                      <span className="json-dot" />
+                      <span className="json-dot" />
+                      <span className="json-editor-title">alert.json</span>
+                    </div>
+                    <ol className="json-lines">
+                      {selectedRawJsonTokenLines.map((tokens, index) => (
+                        <li key={`json-line-${index + 1}`}>
+                          <code>
+                            {tokens.length
+                              ? tokens.map((token, tokenIndex) => (
+                                  <span key={`json-token-${index + 1}-${tokenIndex}`} className={`json-token json-token-${token.type}`}>
+                                    {token.text}
+                                  </span>
+                                ))
+                              : ' '}
+                          </code>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
                 </div>
               ) : null}
             </div>
