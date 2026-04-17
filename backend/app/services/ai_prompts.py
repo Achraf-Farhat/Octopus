@@ -18,7 +18,7 @@ def translate_to_query_system_prompt() -> str:
         "Lucene/OpenSearch query_string syntax and return a single JSON object.\n\n"
         "## FIELD REFERENCE:\n"
         "- rule.id          — Wazuh rule number (e.g. 5710 = SSH brute-force)\n"
-        "- rule.level       — Severity 0-15 (12+ = critical)\n"
+        "- rule.level       — Severity 0-30 (0-6 = low, 7-11 = medium, 12-14 = high, 15+ = critical)\n"
         "- rule.groups      — Comma-separated group tags (authentication_failed, web, suricata, syslog, …)\n"
         "- rule.description — Free-text rule description (use wildcards: *brute*)\n"
         "- rule.mitre.id    — MITRE ATT&CK technique ID (e.g. T1110)\n"
@@ -46,6 +46,12 @@ def translate_to_query_system_prompt() -> str:
         "- last month       → @timestamp:[now-1M TO now]\n"
         "- last N hours     → @timestamp:[now-Nh TO now]\n"
         "- last N days      → @timestamp:[now-Nd TO now]\n\n"
+        "## TIME RANGE NORMALIZATION:\n"
+        "- If the user mentions a specific date or date range, resolve it into exact ISO-8601 UTC bounds.\n"
+        "- Use the current year when the year is omitted.\n"
+        "- Use inclusive boundaries for date-only ranges (00:00:00 to 23:59:59.999).\n"
+        "- Return the resolved range in the time_range object, even if the query itself already contains a timestamp clause.\n"
+        "- If no time is mentioned, set time_range.label to \"unspecified\" and start/end to null.\n\n"
         "## OPERATOR RULES:\n"
         "- Logical: AND  OR  NOT  (always uppercase)\n"
         "- Grouping: (A OR B) AND C\n"
@@ -63,15 +69,19 @@ def translate_to_query_system_prompt() -> str:
         'Q: "port scans detected this week"\n'
         'A: {"language":"dql","query":"(rule.mitre.id:T1046 OR rule.groups:network_scan OR rule.description:*scan*) AND @timestamp:[now/w TO now]","confidence":0.88,"time_range":"this week","notes":"MITRE T1046 = Network Service Scanning; also covers description wildcard as fallback."}\n\n'
         'Q: "web attacks against server-01 last 7 days"\n'
-        'A: {"language":"dql","query":"rule.groups:web AND agent.name:server-01 AND @timestamp:[now-7d TO now]","confidence":0.97,"time_range":"last 7 days","notes":"Filtered by web attack group and specific agent hostname."}\n\n'
+        'A: {"language":"dql","query":"rule.groups:web AND agent.name:server-01 AND @timestamp:[now-7d TO now]","confidence":0.97,"time_range":{"label":"last 7 days","start":"2026-04-10T00:00:00Z","end":"2026-04-17T23:59:59.999Z","precision":"range"},"notes":"Filtered by web attack group and specific agent hostname."}\n\n'
+        'Q: "give me alerts of april 5"\n'
+        'A: {"language":"dql","query":"@timestamp:[2026-04-05T00:00:00Z TO 2026-04-05T23:59:59.999Z]","confidence":0.96,"time_range":{"label":"April 5, 2026","start":"2026-04-05T00:00:00Z","end":"2026-04-05T23:59:59.999Z","precision":"day"},"notes":"Resolved the date-only request to the current year and expanded it to a full-day UTC window."}\n\n'
+        'Q: "give me alerts from february 2 to march 15"\n'
+        'A: {"language":"dql","query":"@timestamp:[2026-02-02T00:00:00Z TO 2026-03-15T23:59:59.999Z]","confidence":0.95,"time_range":{"label":"February 2, 2026 to March 15, 2026","start":"2026-02-02T00:00:00Z","end":"2026-03-15T23:59:59.999Z","precision":"range"},"notes":"Expanded both endpoints to inclusive full-day UTC boundaries."}\n\n'
         'Q: "brute force from 203.0.113.45"\n'
-        'A: {"language":"dql","query":"rule.groups:authentication_failed AND data.srcip:203.0.113.45","confidence":0.99,"time_range":"unspecified","notes":"No time range specified; returns all matching events."}\n\n'
+        'A: {"language":"dql","query":"rule.groups:authentication_failed AND data.srcip:203.0.113.45","confidence":0.99,"time_range":{"label":"unspecified","start":null,"end":null,"precision":"none"},"notes":"No time range specified; returns all matching events."}\n\n'
         'Q: "malware or ransomware events last 48 hours"\n'
         'A: {"language":"dql","query":"(rule.groups:malware OR rule.description:*malware* OR rule.description:*ransomware* OR rule.mitre.technique:*Ransomware*) AND @timestamp:[now-48h TO now]","confidence":0.90,"time_range":"last 48 hours","notes":"Broad match across groups, description, and MITRE technique field."}\n\n'
         'Q: "privilege escalation attempts"\n'
         'A: {"language":"dql","query":"(rule.mitre.id:T1068 OR rule.mitre.id:T1078 OR rule.groups:pam OR rule.description:*privilege*escalat*) AND @timestamp:[now-24h TO now]","confidence":0.87,"time_range":"last 24 hours","notes":"Defaulted to last 24h since no time was specified; covers common privilege escalation rule patterns."}\n\n'
         "## OUTPUT FORMAT (return ONLY this JSON — no markdown, no extra text):\n"
-        '{"language":"dql","query":"<lucene query string>","confidence":<0.0-1.0>,"time_range":"<human label>","notes":"<brief rationale>"}'
+        '{"language":"dql","query":"<lucene query string>","confidence":<0.0-1.0>,"time_range":{"label":"<human label>","start":"<ISO-8601 UTC or null>","end":"<ISO-8601 UTC or null>","precision":"<none|day|range|week|month|year|exact>"},"notes":"<brief rationale>"}'
     )
 
 

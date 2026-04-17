@@ -139,12 +139,48 @@ def _sanitize_text(value: object, fallback: str = "") -> str:
     return text if text else fallback
 
 
-def _normalize_time_range(value: object) -> str:
+def _normalize_iso_datetime(value: object) -> str | None:
+    text = _sanitize_text(value)
+    if not text or text.lower() in {"none", "null", "unspecified"}:
+        return None
+
+    candidate = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except Exception:
+        try:
+            parsed = datetime.fromisoformat(candidate.split()[0])
+        except Exception:
+            return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_time_range(value: object) -> dict:
+    label = "unspecified"
+    start = None
+    end = None
+    precision = "none"
+
     if isinstance(value, dict):
-        start = _sanitize_text(value.get("start"), "unspecified")
-        end = _sanitize_text(value.get("end"), "unspecified")
-        return f"{start} to {end}"
-    return _sanitize_text(value, "unspecified")
+        label = _sanitize_text(value.get("label") or value.get("text") or value.get("range"), label)
+        start = _normalize_iso_datetime(value.get("start") or value.get("startDateTime") or value.get("from"))
+        end = _normalize_iso_datetime(value.get("end") or value.get("endDateTime") or value.get("to"))
+        precision = _sanitize_text(value.get("precision"), precision).lower()
+    elif isinstance(value, str):
+        label = _sanitize_text(value, label)
+
+    if precision not in {"none", "day", "range", "week", "month", "year", "exact", "hour", "minute"}:
+        precision = "range" if start and end else "none"
+
+    return {
+        "label": label,
+        "start": start,
+        "end": end,
+        "precision": precision,
+    }
 
 
 def _normalize_severity_assessment(value: object) -> str:
@@ -188,7 +224,7 @@ async def translate_search(payload: SearchRequest):
     language = _normalize_language(parsed.get("language"), payload.mode)
     query = _sanitize_query(str(parsed.get("query") or payload.query))
     confidence = _validate_confidence(parsed.get("confidence"))
-    time_range = _normalize_time_range(parsed.get("time_range"))
+    time_range = _normalize_time_range(parsed.get("time_range") or parsed.get("time_range_bounds"))
     notes = str(parsed.get("notes") or "")
 
     return {
@@ -197,7 +233,8 @@ async def translate_search(payload: SearchRequest):
         "language": language,
         "query": query,
         "confidence": confidence,
-        "time_range": time_range,
+        "time_range": time_range["label"],
+        "time_range_bounds": time_range,
         "notes": notes,
         "dql": query,
     }

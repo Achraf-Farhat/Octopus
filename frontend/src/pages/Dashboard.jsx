@@ -152,6 +152,23 @@ function setDateWithHour(year, month, day, hour) {
   return toLocalDateTimeValue(new Date(year, month, day, hour, 0, 0, 0))
 }
 
+function normalizeTranslatedTimeRange(bounds) {
+  if (!bounds || typeof bounds !== 'object') return null
+
+  const startValue = bounds.startDateTime ?? bounds.start ?? bounds.from ?? null
+  const endValue = bounds.endDateTime ?? bounds.end ?? bounds.to ?? null
+  if (!startValue || !endValue) return null
+
+  const startDate = new Date(startValue)
+  const endDate = new Date(endValue)
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return null
+
+  return {
+    startDateTime: toLocalDateTimeValue(startDate),
+    endDateTime: toLocalDateTimeValue(endDate),
+  }
+}
+
 function getNextChartGranularity(granularity) {
   if (granularity === 'month') return 'day'
   if (granularity === 'week') return 'day'
@@ -280,6 +297,7 @@ export default function Dashboard() {
     return { month: now.getMonth(), year: now.getFullYear() }
   })
   const hasMountedDateSync = useRef(false)
+  const suppressNextTimeFilterSyncRef = useRef(false)
   const calendarRef = useRef(null)
   const huntPanelRef = useRef(null)
   const contentGridRef = useRef(null)
@@ -501,11 +519,34 @@ export default function Dashboard() {
       hasMountedDateSync.current = true
       return
     }
+    if (suppressNextTimeFilterSyncRef.current) {
+      suppressNextTimeFilterSyncRef.current = false
+      return
+    }
     if (!hasValidTimeRange(timeFilter)) return
     setChartZoomStack([])
     setChartZoomLabel('')
     Promise.all([loadAlerts(activeBaseQuery, 1), loadSummary(activeBaseQuery)])
   }, [timeFilter.startDateTime, timeFilter.endDateTime])
+
+  function applyTranslatedTimeRange(bounds) {
+    const nextRange = normalizeTranslatedTimeRange(bounds)
+    if (!nextRange) return
+
+    suppressNextTimeFilterSyncRef.current = true
+    setTimeFilter(nextRange)
+    setCalendarStage('start')
+    setManualDateEntry(false)
+    setShowCalendar(false)
+
+    const startDate = new Date(nextRange.startDateTime)
+    if (!Number.isNaN(startDate.getTime())) {
+      setCalendarView({
+        month: startDate.getMonth(),
+        year: startDate.getFullYear(),
+      })
+    }
+  }
 
   function applyHistorySearch(historyId) {
     const selected = searchHistory.find((item) => String(item.id) === String(historyId))
@@ -523,12 +564,15 @@ export default function Dashboard() {
     try {
       const response = await api.post('/ai/translate-search', { query: search, mode: 'auto' }, { timeout: 90000 })
       const translatedQuery = response.data?.query ?? response.data?.dql ?? ''
+      const timeRangeBounds = response.data?.time_range_bounds ?? null
       setTranslation(translatedQuery || 'No translation returned.')
       setTranslationMeta({
         language: response.data?.language ?? 'dql',
         timeRange: response.data?.time_range ?? 'unspecified',
+        timeRangeBounds,
         notes: response.data?.notes ?? '',
       })
+      applyTranslatedTimeRange(timeRangeBounds)
       return translatedQuery
     } catch (err) {
       if (err?.code === 'ECONNABORTED') {
