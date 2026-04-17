@@ -1,47 +1,279 @@
-def translate_to_query_prompt(user_query: str, now: str, mode: str = "auto") -> str:
-    target_language = "auto (pick dql unless user explicitly asks for wql)" if mode == "auto" else mode
+"""
+AI Prompt Templates for Octopus Platform
+Carefully crafted prompts for optimal LLM performance
+"""
+
+from datetime import datetime
+from typing import Optional
+
+
+def translate_to_query_system_prompt() -> str:
+    """
+    System prompt for the NL → DQL translation chat endpoint.
+    Kept separate so it can be passed as the 'system' role message.
+    """
     return (
-        "You are a Wazuh detection query expert. Convert the user request into a valid Wazuh/OpenSearch query_string filter.\n"
-        f"Target mode: {target_language}\n"
-        f"Current UTC time: {now}\n"
-        f'User query: "{user_query}"\n\n'
-        "Output STRICT JSON only with this exact schema:\n"
-        '{"language":"dql|wql","query":"...","confidence":0.0,"time_range":"...","notes":"..."}\n\n'
-        "Rules:\n"
-        "- query must be a single-line Lucene/OpenSearch query_string expression (no markdown).\n"
-        "- NEVER output SQL, KQL, JSON DSL, pseudocode, explanations, or code fences.\n"
-        "- Use query_string syntax such as: rule.level:[10 TO *] AND rule.id:5716 AND @timestamp:[now-24h TO now].\n"
-        "- For generic requests like 'last N alerts', use a conservative filter like @timestamp:[now-24h TO now]; result count is handled by API pagination.\n"
-        "- confidence is a float between 0 and 1.\n"
-        "- if user gives a time hint (today, last hour, etc.), include it in query and time_range.\n"
-        "- prefer fielded filters (rule.id, rule.level, agent.name, agent.ip, data.srcip, location).\n"
-        "- if uncertain, keep query conservative and explain briefly in notes.\n"
+        "You are a Wazuh/OpenSearch query expert embedded in a SOC platform.\n"
+        "Your ONLY job is to convert natural language security questions into valid "
+        "Lucene/OpenSearch query_string syntax and return a single JSON object.\n\n"
+        "## FIELD REFERENCE:\n"
+        "- rule.id          — Wazuh rule number (e.g. 5710 = SSH brute-force)\n"
+        "- rule.level       — Severity 0-15 (12+ = critical)\n"
+        "- rule.groups      — Comma-separated group tags (authentication_failed, web, suricata, syslog, …)\n"
+        "- rule.description — Free-text rule description (use wildcards: *brute*)\n"
+        "- rule.mitre.id    — MITRE ATT&CK technique ID (e.g. T1110)\n"
+        "- rule.mitre.technique — Technique name (e.g. 'Brute Force')\n"
+        "- @timestamp       — ISO-8601 alert time (use Lucene range syntax)\n"
+        "- agent.name       — Hostname of the monitored endpoint\n"
+        "- agent.ip         — IP of the monitored endpoint\n"
+        "- data.srcip       — Attacker / source IP\n"
+        "- data.dstip       — Target / destination IP\n"
+        "- data.srcport     — Source port (integer)\n"
+        "- data.dstport     — Destination port (integer)\n"
+        "- data.protocol    — tcp | udp | icmp\n"
+        "- data.url         — HTTP request URL\n"
+        "- data.id          — Event / process ID\n"
+        "- location         — Log source path\n"
+        "- geoip.country_name — Source IP country\n"
+        "- geoip.city_name    — Source IP city\n\n"
+        "## TIME RANGE SYNTAX (use exactly as shown):\n"
+        "- last hour        → @timestamp:[now-1h TO now]\n"
+        "- last 24 hours    → @timestamp:[now-24h TO now]\n"
+        "- last 7 days      → @timestamp:[now-7d TO now]\n"
+        "- today            → @timestamp:[now/d TO now]\n"
+        "- yesterday        → @timestamp:[now-1d/d TO now-1d/d]\n"
+        "- this week        → @timestamp:[now/w TO now]\n"
+        "- last month       → @timestamp:[now-1M TO now]\n"
+        "- last N hours     → @timestamp:[now-Nh TO now]\n"
+        "- last N days      → @timestamp:[now-Nd TO now]\n\n"
+        "## OPERATOR RULES:\n"
+        "- Logical: AND  OR  NOT  (always uppercase)\n"
+        "- Grouping: (A OR B) AND C\n"
+        "- Ranges: rule.level:[10 TO 15]  or  rule.level:>=10\n"
+        "- Wildcards: rule.description:*brute*force*\n"
+        "- Phrase: rule.description:\"failed password\"\n"
+        "- NEVER use SQL syntax (SELECT, FROM, WHERE)\n"
+        "- NEVER use KQL syntax (field: value with colon-space)\n"
+        "- NEVER wrap the query in JSON DSL { query: { … } }\n\n"
+        "## FEW-SHOT EXAMPLES:\n\n"
+        'Q: "show me failed SSH logins in the last 24 hours"\n'
+        'A: {"language":"dql","query":"rule.groups:authentication_failed AND (rule.groups:ssh OR rule.id:5710 OR rule.id:5711 OR rule.id:5716) AND @timestamp:[now-24h TO now]","confidence":0.95,"time_range":"last 24 hours","notes":"Covers common Wazuh SSH auth-failure rule IDs plus group tag."}\n\n'
+        'Q: "critical alerts from China today"\n'
+        'A: {"language":"dql","query":"rule.level:[12 TO 15] AND geoip.country_name:China AND @timestamp:[now/d TO now]","confidence":0.92,"time_range":"today","notes":"Level 12-15 maps to critical in Wazuh severity scale."}\n\n'
+        'Q: "port scans detected this week"\n'
+        'A: {"language":"dql","query":"(rule.mitre.id:T1046 OR rule.groups:network_scan OR rule.description:*scan*) AND @timestamp:[now/w TO now]","confidence":0.88,"time_range":"this week","notes":"MITRE T1046 = Network Service Scanning; also covers description wildcard as fallback."}\n\n'
+        'Q: "web attacks against server-01 last 7 days"\n'
+        'A: {"language":"dql","query":"rule.groups:web AND agent.name:server-01 AND @timestamp:[now-7d TO now]","confidence":0.97,"time_range":"last 7 days","notes":"Filtered by web attack group and specific agent hostname."}\n\n'
+        'Q: "brute force from 203.0.113.45"\n'
+        'A: {"language":"dql","query":"rule.groups:authentication_failed AND data.srcip:203.0.113.45","confidence":0.99,"time_range":"unspecified","notes":"No time range specified; returns all matching events."}\n\n'
+        'Q: "malware or ransomware events last 48 hours"\n'
+        'A: {"language":"dql","query":"(rule.groups:malware OR rule.description:*malware* OR rule.description:*ransomware* OR rule.mitre.technique:*Ransomware*) AND @timestamp:[now-48h TO now]","confidence":0.90,"time_range":"last 48 hours","notes":"Broad match across groups, description, and MITRE technique field."}\n\n'
+        'Q: "privilege escalation attempts"\n'
+        'A: {"language":"dql","query":"(rule.mitre.id:T1068 OR rule.mitre.id:T1078 OR rule.groups:pam OR rule.description:*privilege*escalat*) AND @timestamp:[now-24h TO now]","confidence":0.87,"time_range":"last 24 hours","notes":"Defaulted to last 24h since no time was specified; covers common privilege escalation rule patterns."}\n\n'
+        "## OUTPUT FORMAT (return ONLY this JSON — no markdown, no extra text):\n"
+        '{"language":"dql","query":"<lucene query string>","confidence":<0.0-1.0>,"time_range":"<human label>","notes":"<brief rationale>"}'
     )
 
 
-def explain_alert_prompt(rule_description: str, severity: str, src_ip: str, mitre_technique: str, alert_data: str) -> str:
+def translate_to_query_prompt(user_query: str, now: str, mode: str = "auto") -> str:
+    """
+    User-turn message for the NL → DQL translation.
+    Used when calling /api/generate (single-turn).  The system prompt above
+    is prepended when calling /api/chat (preferred).
+
+    Args:
+        user_query: User's natural language query
+        now: Current UTC timestamp
+        mode: "auto", "dql", or "wql"
+
+    Returns:
+        Formatted prompt string
+    """
+    target_language = "dql" if mode in ("auto", "dql") else "wql"
+
     return (
-        "You are a SOC alert triage assistant. Analyze this alert for an analyst.\n"
-        f"Rule: {rule_description}\n"
-        f"Severity: {severity}\n"
+        f"Current UTC time: {now}\n"
+        f"Target query language: {target_language}\n\n"
+        "Think step by step:\n"
+        "1. Identify intent (what kind of threat/event is the user looking for?)\n"
+        "2. Identify relevant fields from the field reference\n"
+        "3. Identify any time range mentioned (default to last 24h if none given)\n"
+        "4. Build the Lucene query_string\n"
+        "5. Estimate confidence\n\n"
+        f'User query: "{user_query}"\n\n'
+        "Now output the JSON object only:"
+    )
+
+
+def explain_alert_prompt(
+    rule_description: str,
+    severity: int | str,
+    src_ip: str,
+    mitre_technique: Optional[str],
+    alert_data: str,
+    dst_ip: str = "unknown",
+    agent_name: str = "unknown",
+    timestamp: str = "unknown",
+    mitre_tactic: Optional[str] = None,
+    threat_intel: Optional[str] = None,
+) -> str:
+    """Enhanced alert explanation prompt with detailed context."""
+    try:
+        severity_num = int(severity)
+    except Exception:
+        severity_num = 7
+
+    severity_label = "Unknown"
+    if 0 <= severity_num <= 3:
+        severity_label = "Low"
+    elif 4 <= severity_num <= 7:
+        severity_label = "Medium"
+    elif 8 <= severity_num <= 11:
+        severity_label = "High"
+    elif 12 <= severity_num <= 15:
+        severity_label = "Critical"
+
+    mitre_info = "None"
+    if mitre_technique and mitre_tactic:
+        mitre_info = f"{mitre_technique} (Tactic: {mitre_tactic})"
+    elif mitre_technique:
+        mitre_info = mitre_technique
+
+    threat_context = threat_intel if threat_intel else "No threat intelligence data available"
+
+    return (
+        "You are an expert SOC (Security Operations Center) analyst providing alert triage assistance.\n"
+        "Your role is to help junior analysts understand security alerts and take appropriate action.\n\n"
+        "## ALERT DETAILS:\n"
+        f"Detection Rule: {rule_description}\n"
+        f"Severity: {severity_num}/15 ({severity_label})\n"
         f"Source IP: {src_ip}\n"
-        f"MITRE: {mitre_technique}\n"
-        f"Data: {alert_data}\n\n"
-        "Output STRICT JSON only with this exact schema:\n"
-        '{"summary":"...","why_it_matters":"...","recommended_actions":["..."],"confidence":0.0,"severity_assessment":"low|medium|high|critical","notes":"..."}\n\n'
-        "Rules:\n"
-        "- summary: 1-3 short sentences, no markdown.\n"
-        "- why_it_matters: focus on risk and potential impact.\n"
-        "- recommended_actions: 3 to 5 concrete analyst steps.\n"
-        "- confidence: float from 0 to 1.\n"
-        "- severity_assessment must be one of: low, medium, high, critical.\n"
-        "- if data is incomplete, keep response conservative and explain in notes."
+        f"Destination IP: {dst_ip}\n"
+        f"Affected System: {agent_name}\n"
+        f"Detection Time: {timestamp}\n"
+        f"MITRE ATT&CK: {mitre_info}\n\n"
+        "## THREAT INTELLIGENCE:\n"
+        f"{threat_context}\n\n"
+        "## RAW ALERT DATA:\n"
+        f"{alert_data}\n\n"
+        "## YOUR TASK:\n"
+        "Analyze this alert as if you're explaining it to a junior SOC analyst (L1/L2 level).\n"
+        "Provide actionable, specific guidance they can follow immediately.\n\n"
+        "## OUTPUT FORMAT (STRICT JSON):\n"
+        "{\n"
+        '  "summary": "2-3 sentences explaining what happened in plain language (no jargon)",\n'
+        '  "why_it_matters": "1-2 sentences on security impact and business risk",\n'
+        '  "attack_narrative": "Brief story: what the attacker likely did step-by-step",\n'
+        '  "recommended_actions": ["Specific action 1", "Specific action 2", "Specific action 3"],\n'
+        '  "prevention_measures": ["Long-term fix 1", "Long-term fix 2"],\n'
+        '  "indicators_of_compromise": ["IOC 1", "IOC 2"],\n'
+        '  "severity_assessment": "low|medium|high|critical",\n'
+        '  "confidence": 0.0-1.0,\n'
+        '  "false_positive_likelihood": "low|medium|high",\n'
+        '  "escalation_recommended": true|false,\n'
+        '  "notes": "Any additional context, caveats, or ambiguities"\n'
+        "}\n\n"
+        "## GUIDELINES:\n"
+        "1. Be specific and actionable, not generic.\n"
+        "2. Use plain language for L1/L2 analysts.\n"
+        "3. Prioritize actions by urgency.\n"
+        "4. Consider false positives where relevant.\n"
+        "5. Include timelines for investigation windows.\n"
+        "6. Map MITRE context when available.\n"
+        "7. Severity should reflect actual business and technical risk.\n"
+        "8. Recommend escalation when impact is broad or containment fails.\n"
+        "9. Confidence: 1.0 definite, 0.7 likely, 0.5 ambiguous, 0.3 weak signal.\n"
+        "10. NO markdown, NO code fences, NO explanatory text outside JSON.\n\n"
+        "Now analyze the alert above and provide your expert assessment:"
     )
 
 
 def generate_rule_prompt(user_request: str) -> str:
+    """Enhanced Wazuh rule generation prompt with examples and validation."""
     return (
-        f'Generate a Wazuh XML rule for: "{user_request}"\n'
-        "Use rule IDs 100000-120000 for custom rules.\n"
-        "Return ONLY valid XML, no markdown."
+        "You are a Wazuh detection rule expert. Generate a valid Wazuh XML rule based on the user's request.\n\n"
+        f'## USER REQUEST:\n"{user_request}"\n\n'
+        "## RULE ID RANGES:\n"
+        "- Custom rules: 100000-120000 (USE THIS RANGE)\n"
+        "- Built-in Wazuh rules: 1-99999 (DO NOT USE)\n\n"
+        "## OUTPUT REQUIREMENTS:\n"
+        "1. Return ONLY the XML rule - NO markdown, NO code fences, NO explanations\n"
+        "2. Use rule ID in range 100000-120000\n"
+        "3. Set appropriate severity level (0-15) based on attack impact\n"
+        "4. Include clear, descriptive <description>\n"
+        "5. Add <mitre><id> if ATT&CK mapping is possible\n"
+        "6. Use <frequency>/<timeframe> for correlation rules where needed\n"
+        "7. Ensure XML is well-formed\n\n"
+        "Now generate the rule for the user's request above. Return ONLY XML from <rule ...> to </rule>:"
+    )
+
+
+def generate_playbook_prompt(scenario: str) -> str:
+    """Playbook generation prompt for incident response automation."""
+    return (
+        "You are an incident response expert. Generate a response playbook for the following security scenario.\n\n"
+        f'## SCENARIO:\n"{scenario}"\n\n'
+        "## OUTPUT FORMAT (STRICT JSON):\n"
+        "{\n"
+        '  "name": "Playbook name",\n'
+        '  "description": "Brief overview",\n'
+        '  "trigger": "Specific trigger",\n'
+        '  "severity": "low|medium|high|critical",\n'
+        '  "estimated_duration_minutes": 15,\n'
+        '  "steps": [{"order":1,"action":"isolate|block|scan|notify|collect|analyze|restore|document","title":"...","description":"...","automation_possible":true|false,"requires_approval":true|false,"estimated_time_minutes":5,"commands":["..."],"success_criteria":"..."}]\n'
+        "}\n\n"
+        "Guidelines: order steps logically (contain -> investigate -> remediate -> document), include actionable commands where possible, JSON only."
+    )
+
+
+def threat_hunt_system_prompt() -> str:
+    """System prompt for threat hunting chat interface."""
+    return (
+        "You are an expert threat hunting assistant helping a SOC analyst investigate potential security incidents.\n\n"
+        "YOUR ROLE:\n"
+        "- Guide analysts through systematic investigations\n"
+        "- Suggest relevant SIEM queries using DQL\n"
+        "- Identify anomalies and suspicious patterns\n"
+        "- Recommend next steps based on findings\n"
+        "- Map activity to MITRE ATT&CK when relevant\n\n"
+        "RESPONSE STYLE:\n"
+        "- Be concise and actionable\n"
+        "- Ask clarifying questions when needed\n"
+        "- Provide exact DQL queries when recommending searches\n"
+        "- Highlight possible false positives\n"
+        "- Keep context from previous messages\n"
+    )
+
+
+def generate_incident_report_prompt(incident_data: dict, alerts: list, analyst_name: str) -> str:
+    """Generate comprehensive incident report prompt."""
+    alerts_summary = "\n".join([
+        f"- [{alert.get('timestamp')}] {alert.get('rule_description')} (Severity: {alert.get('severity')}, Source: {alert.get('src_ip')})"
+        for alert in alerts[:20]
+    ])
+
+    if len(alerts) > 20:
+        alerts_summary += f"\n... and {len(alerts) - 20} more alerts"
+
+    current_timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    return (
+        "You are generating a professional incident report for a security incident.\n"
+        "The report may be reviewed by SOC management and executive leadership.\n\n"
+        "## INCIDENT DATA:\n"
+        f"Incident ID: {incident_data.get('id')}\n"
+        f"Title: {incident_data.get('title')}\n"
+        f"Severity: {incident_data.get('severity')}\n"
+        f"Status: {incident_data.get('status')}\n"
+        f"Risk Score: {incident_data.get('risk_score')}/100\n"
+        f"Detection Time: {incident_data.get('created_at')}\n"
+        f"Primary Attacker IP: {incident_data.get('src_ip')}\n"
+        f"MITRE ATT&CK Techniques: {', '.join(incident_data.get('mitre_techniques', []))}\n"
+        f"Alert Count: {len(alerts)}\n"
+        f"Analyst: {analyst_name}\n"
+        f"Report Generated: {current_timestamp}\n\n"
+        "## RELATED ALERTS:\n"
+        f"{alerts_summary}\n\n"
+        "Generate a complete Markdown incident report with sections for: Executive Summary, Attack Timeline, Technical Analysis, IOCs, Impact Assessment, Response Actions, Root Cause, Recommendations, Lessons Learned, and Appendix.\n"
+        "Use UTC timestamps and specific actionable recommendations."
     )

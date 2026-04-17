@@ -8,6 +8,7 @@ from app.deps import get_current_user
 from app.models.threat_hunt_message import ThreatHuntMessage
 from app.models.user import User
 from app.schemas.threat_hunt import ThreatHuntMessageCreate, ThreatHuntMessageRead, ThreatHuntReply
+from app.services.ai_prompts import threat_hunt_system_prompt
 from app.services.audit import write_audit_log
 from app.services.ollama_client import OllamaClient
 
@@ -72,17 +73,15 @@ async def send_message(
     )
     recent_messages = list(reversed(recent_messages))
 
-    prompt_lines = [
-        "You are Octopus SOC copilot. Respond with concise, practical threat-hunting guidance.",
-        "Use only plain text and suggest concrete next queries/investigation steps.",
-    ]
+    # Build structured message history for /api/chat
+    system = threat_hunt_system_prompt()
+    chat_messages = [{"role": "system", "content": system}]
     for message in recent_messages:
-        prompt_lines.append(f"{message.role.upper()}: {message.content}")
-    prompt_lines.append("ASSISTANT:")
-    prompt = "\n".join(prompt_lines)
+        role = "assistant" if message.role == "assistant" else "user"
+        chat_messages.append({"role": role, "content": message.content})
 
     try:
-        reply = await OllamaClient().chat(prompt)
+        reply = await OllamaClient().chat("", system=system, messages=chat_messages)
     except Exception:
         reply = _fallback_reply(content)
 

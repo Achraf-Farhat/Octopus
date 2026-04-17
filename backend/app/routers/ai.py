@@ -6,7 +6,12 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
-from app.services.ai_prompts import explain_alert_prompt, generate_rule_prompt, translate_to_query_prompt
+from app.services.ai_prompts import (
+    explain_alert_prompt,
+    generate_rule_prompt,
+    translate_to_query_prompt,
+    translate_to_query_system_prompt,
+)
 from app.services.ollama_client import OllamaClient
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -52,6 +57,7 @@ def _extract_json_object(value: str) -> dict:
     if not text:
         raise ValueError("Empty AI translation output")
 
+    # 1. Try direct parse first (model returned clean JSON)
     try:
         parsed = json.loads(text)
         if isinstance(parsed, dict):
@@ -59,14 +65,38 @@ def _extract_json_object(value: str) -> dict:
     except Exception:
         pass
 
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
-        raise ValueError("No JSON object found in AI output")
+    # 2. Strip markdown code fences the model may have added (```json … ```)
+    fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if fence_match:
+        try:
+            parsed = json.loads(fence_match.group(1).strip())
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
 
-    parsed = json.loads(match.group(0))
-    if not isinstance(parsed, dict):
-        raise ValueError("AI output JSON root must be an object")
-    return parsed
+    # 3. Extract the first {...} block from mixed text
+    match = re.search(r"\{[\s\S]*?\}", text)
+    if match:
+        try:
+            parsed = json.loads(match.group(0))
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    # 4. Greedy extraction — take everything from first { to last }
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            parsed = json.loads(text[start : end + 1])
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    raise ValueError("No valid JSON object found in AI output")
 
 
 def _sanitize_query(value: str) -> str:
@@ -146,9 +176,13 @@ def _normalize_actions(value: object) -> list[str]:
 async def translate_search(payload: SearchRequest):
     client = OllamaClient()
     await _ensure_ollama_ready(client)
-    prompt = translate_to_query_prompt(payload.query, datetime.now(timezone.utc).isoformat(), mode=payload.mode)
 
-    raw_output = await client.chat(prompt)
+    now = datetime.now(timezone.utc).isoformat()
+    system_prompt = translate_to_query_system_prompt()
+    user_prompt = translate_to_query_prompt(payload.query, now, mode=payload.mode)
+
+    # Use /api/chat with system/user separation for better accuracy
+    raw_output = await client.chat(user_prompt, system=system_prompt)
     parsed = _extract_json_object(raw_output)
 
     language = _normalize_language(parsed.get("language"), payload.mode)
@@ -169,6 +203,21 @@ async def translate_search(payload: SearchRequest):
     }
 
 
+_EXPLAIN_FALLBACK = {
+    "explanation": "AI analysis timed out. The model is still loading or the response took too long.",
+    "summary": "AI analysis timed out. Please retry in a moment.",
+    "why_it_matters": "Manual review required — AI service did not respond in time.",
+    "recommended_actions": [
+        "Correlate with nearby alerts and host activity.",
+        "Investigate source and target entities for anomalies.",
+        "Escalate according to incident response policy if malicious indicators are confirmed.",
+    ],
+    "severity_assessment": "medium",
+    "confidence": 0.0,
+    "notes": "Fallback: AI response timed out. Retry once the model finishes loading.",
+}
+
+
 @router.post("/explain-alert")
 async def explain_alert(payload: ExplainRequest):
     client = OllamaClient()
@@ -180,7 +229,11 @@ async def explain_alert(payload: ExplainRequest):
         payload.mitre_technique,
         payload.alert_data,
     )
-    raw_output = await client.chat(prompt)
+
+    try:
+        raw_output = await client.chat(prompt)
+    except Exception:
+        return _EXPLAIN_FALLBACK
 
     try:
         parsed = _extract_json_object(raw_output)

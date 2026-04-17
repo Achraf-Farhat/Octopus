@@ -4,12 +4,12 @@ services:
     network_mode: host
     command: tcp-listen:19200,fork,reuseaddr,bind=0.0.0.0 tcp:127.0.0.1:9200
 
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
 
   postgres:
     image: postgres:15
@@ -45,8 +45,8 @@ services:
     depends_on:
       indexer-proxy:
         condition: service_started
-      ollama:
-        condition: service_started
+      # ollama:
+      #   condition: service_started
       postgres:
         condition: service_healthy
       redis:
@@ -66,7 +66,7 @@ services:
       - .env
     depends_on:
       - backend
-      - ollama
+      # - ollama
       - redis
       - postgres
     volumes:
@@ -82,7 +82,7 @@ services:
       - .env
     depends_on:
       - backend
-      - ollama
+      # - ollama
       - redis
       - postgres
     volumes:
