@@ -447,6 +447,81 @@ def _build_octopus_rules_xml(rules: list) -> str:
     return "\n".join(parts)
 
 
+async def sync_custom_rules(db: Session):
+    """Synchronizes custom rules in database with the rules deployed on the Wazuh Manager's file.
+
+    It performs a two-way synchronization:
+    1. If a rule exists in Wazuh's octopus_rules.xml but has been modified, sync it to the DB.
+    2. If a rule is on Wazuh but not in the DB, create it in the DB as deployed.
+    3. If a rule is in the DB as deployed but not on Wazuh, mark it as draft in the DB.
+    """
+    import httpx
+    client = WazuhClient()
+    try:
+        wazuh_xml = await client.get_rule_file(OCTOPUS_RULES_FILENAME)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            # File doesn't exist yet, which means 0 custom rules deployed
+            wazuh_xml = '<group name="local,custom,"></group>'
+        else:
+            return
+    except Exception:
+        # If Wazuh is down/unreachable, we skip syncing to avoid losing deployed status
+        return
+
+    try:
+        # Parse XML from Wazuh
+        root = ET.fromstring(wazuh_xml)
+        wazuh_rules = {}
+        for rule_el in root.findall(".//rule"):
+            rid = rule_el.get("id")
+            if rid:
+                # Format to a standard string
+                rule_xml = ET.tostring(rule_el, encoding="utf-8").decode("utf-8").strip()
+                wazuh_rules[rid] = pretty_print_xml(rule_xml)
+
+        db_rules = db.query(CustomRule).all()
+        db_rules_dict = {r.rule_id: r for r in db_rules}
+
+        # 1. Sync existing and missing rules in DB
+        for rid, rule_xml in wazuh_rules.items():
+            if rid in db_rules_dict:
+                db_rule = db_rules_dict[rid]
+                if db_rule.status == "deployed":
+                    # Compare formatted xml
+                    db_xml_formatted = pretty_print_xml(db_rule.xml_content)
+                    if db_xml_formatted != rule_xml:
+                        # Modified on Wazuh! Update database.
+                        db_rule.xml_content = rule_xml
+                        # parse name/description
+                        parsed = parse_xml_rule(rule_xml)
+                        db_rule.name = parsed["description"] or db_rule.name
+                        db.add(db_rule)
+            else:
+                # Rule is in Wazuh but not in DB! Add to DB as deployed
+                parsed = parse_xml_rule(rule_xml)
+                new_rule = CustomRule(
+                    rule_id=rid,
+                    name=parsed["description"] or f"Wazuh Rule {rid}",
+                    xml_content=rule_xml,
+                    status="deployed",
+                    deployed_at=datetime.utcnow()
+                )
+                db.add(new_rule)
+
+        # 2. Sync rules in DB that are marked deployed but NOT in Wazuh
+        for r in db_rules:
+            if r.status == "deployed" and r.rule_id not in wazuh_rules:
+                # Mark as draft since it's no longer deployed
+                r.status = "draft"
+                db.add(r)
+
+        db.commit()
+    except Exception as e:
+        # Ensure we don't break listing rules if sync logic fails
+        print(f"Error in sync_custom_rules: {e}")
+
+
 # --- Endpoints ---
 
 @router.get("")
@@ -460,6 +535,9 @@ async def list_rules(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Perform two-way synchronization with Wazuh Manager
+    await sync_custom_rules(db)
+
     rules = []
 
     # 1. Fetch custom rules from local DB
@@ -675,7 +753,7 @@ def create_rule(
 
 
 @router.put("/{id}", response_model=CustomRuleRead)
-def update_rule(
+async def update_rule(
     id: int,
     payload: CustomRuleCreate,
     request: Request,
@@ -691,13 +769,35 @@ def update_rule(
         if existing:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rule ID already exists")
 
+    was_deployed = rule.status == "deployed"
+
     rule.rule_id = payload.rule_id
     rule.name = payload.name
     rule.xml_content = payload.xml_content
-    rule.status = "draft"  # Updates bring rule back to draft status
+    
+    # Keep status as deployed if it was already deployed
+    if was_deployed:
+        rule.status = "deployed"
+    else:
+        rule.status = "draft"
+
     db.add(rule)
     db.commit()
     db.refresh(rule)
+
+    if was_deployed:
+        try:
+            deployed_rules = db.query(CustomRule).filter(CustomRule.status == "deployed").all()
+            xml_content = _build_octopus_rules_xml(deployed_rules)
+            client = WazuhClient()
+            await client.upload_rule_file(OCTOPUS_RULES_FILENAME, xml_content)
+            
+            # Validate and restart
+            val_resp = await client.validate_configuration()
+            if val_resp.get("error", 0) == 0 and val_resp.get("data", {}).get("status", "ok") == "ok":
+                await client.restart_manager()
+        except Exception:
+            pass
 
     write_audit_log(
         db,
