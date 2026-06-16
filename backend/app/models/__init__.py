@@ -9,3 +9,4 @@ from .playbook import Playbook
 from .playbook_execution import PlaybookExecution
 from .search_history import SearchHistory
 from .threat_hunt_message import ThreatHuntMessage
+from .integration import Integration
