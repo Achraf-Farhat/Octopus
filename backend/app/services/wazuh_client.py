@@ -336,3 +336,72 @@ class WazuhClient:
 
     async def health(self) -> dict[str, Any]:
         return await self._request("GET", "/")
+
+    async def get_rule_file(self, filename: str) -> str:
+        token = await self._get_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        async with httpx.AsyncClient(verify=self.verify_ssl, timeout=30) as client:
+            response = await client.get(
+                urljoin(self.base_url.rstrip("/") + "/", f"rules/files/{filename}"),
+                params={"raw": "true"},
+                headers=headers
+            )
+            response.raise_for_status()
+            return response.text
+
+    async def upload_rule_file(self, filename: str, content: str) -> dict[str, Any]:
+        token = await self._get_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/octet-stream"
+        }
+        async with httpx.AsyncClient(verify=self.verify_ssl, timeout=30) as client:
+            response = await client.put(
+                urljoin(self.base_url.rstrip("/") + "/", f"rules/files/{filename}"),
+                content=content.encode("utf-8"),
+                headers=headers
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def validate_configuration(self) -> dict[str, Any]:
+        return await self._request("GET", "/manager/configuration/validation")
+
+    async def restart_manager(self) -> dict[str, Any]:
+        token = await self._get_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        async with httpx.AsyncClient(verify=self.verify_ssl, timeout=30) as client:
+            response = await client.put(
+                urljoin(self.base_url.rstrip("/") + "/", "manager/restart"),
+                headers=headers
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def get_wazuh_rule(self, rule_id: str) -> dict[str, Any]:
+        return await self._request("GET", "/rules", params={"rule_ids": rule_id})
+
+    async def get_wazuh_rules(
+        self,
+        limit: int = 500,
+        offset: int = 0,
+        search: str = None,
+        level: str = None,
+        group: str = None
+    ) -> dict[str, Any]:
+        params = {"limit": limit, "offset": offset}
+        q_parts = []
+        if search:
+            if str(search).isdigit():
+                q_parts.append(f"id={search}")
+            else:
+                q_parts.append(f"description~{search}")
+        if level:
+            q_parts.append(f"level={level}")
+        if group:
+            q_parts.append(f"groups={group}")
+            
+        if q_parts:
+            params["q"] = ";".join(q_parts)
+            
+        return await self._request("GET", "/rules", params=params)

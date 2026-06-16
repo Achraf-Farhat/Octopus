@@ -321,4 +321,25 @@ async def generate_rule(payload: RuleRequest):
     client = OllamaClient()
     await _ensure_ollama_ready(client)
     prompt = generate_rule_prompt(payload.request)
-    return {"xml": await client.chat(prompt)}
+    raw_xml = await client.chat(prompt)
+    
+    # Clean markdown wraps if the model outputted them
+    cleaned = raw_xml.strip()
+    if cleaned.startswith("```xml"):
+        cleaned = cleaned[6:]
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+
+    # Extract only the <rule ...> ... </rule> block
+    rule_match = re.search(r'(<rule\s+[^>]*>.*?</rule>)', cleaned, re.DOTALL)
+    if rule_match:
+        xml_string = rule_match.group(1)
+    else:
+        xml_string = cleaned
+
+    from app.routers.rules import pretty_print_xml
+    formatted_xml = pretty_print_xml(xml_string)
+    return {"xml": formatted_xml}
