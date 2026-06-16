@@ -14,6 +14,7 @@ from app.routers.playbooks import router as playbooks_router
 from app.routers.rules import router as rules_router
 from app.routers.threat_hunt import router as threat_hunt_router
 from app.routers.users import router as users_router
+from app.routers.endpoints import router as endpoints_router
 
 app = FastAPI(title="Octopus SOC Platform", version="0.1.0")
 
@@ -34,6 +35,7 @@ app.include_router(incidents_router)
 app.include_router(rules_router)
 app.include_router(playbooks_router)
 app.include_router(threat_hunt_router)
+app.include_router(endpoints_router)
 
 
 @app.on_event("startup")

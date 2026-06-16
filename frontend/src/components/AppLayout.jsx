@@ -46,6 +46,15 @@ function Icon({ name }) {
       </svg>
     )
   }
+  if (name === 'endpoints') {
+    return (
+      <svg {...common}>
+        <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+        <line x1="8" y1="21" x2="16" y2="21" />
+        <line x1="12" y1="17" x2="12" y2="21" />
+      </svg>
+    )
+  }
   return (
     <svg {...common}>
       <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
@@ -61,6 +70,7 @@ const links = [
   { to: '/threat-hunt', label: 'Threat Hunt', icon: 'hunt' },
   { to: '/incidents', label: 'Incidents', icon: 'incidents' },
   { to: '/rules', label: 'Rules', icon: 'rules' },
+  { to: '/endpoints', label: 'Endpoints', icon: 'endpoints' },
   { to: '/playbooks', label: 'Playbooks', icon: 'playbooks' },
   { to: '/users', label: 'Users', icon: 'users' },
 ]

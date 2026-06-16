@@ -8,6 +8,7 @@ import Playbooks from './pages/Playbooks'
 import Rules from './pages/Rules'
 import ThreatHunt from './pages/ThreatHunt'
 import Users from './pages/Users'
+import Endpoints from './pages/Endpoints'
 import './App.css'
 
 export default function App() {
@@ -61,6 +62,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <Users />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/endpoints"
+            element={
+              <ProtectedRoute>
+                <Endpoints />
               </ProtectedRoute>
             }
           />
