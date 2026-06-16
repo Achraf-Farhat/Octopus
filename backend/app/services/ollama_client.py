@@ -88,6 +88,34 @@ class OllamaClient:
             data = response.json()
             return data.get("message", {}).get("content", "")
 
+    async def chat_stream(self, messages: list):
+        """Stream response chunks from Ollama /api/chat."""
+        self._assert_configured()
+        import json
+        payload = {
+            "model": self.model,
+            "stream": True,
+            "options": {
+                "temperature": 0.1,
+                "top_p": 0.9,
+                "num_predict": 1024,
+            },
+            "messages": messages,
+        }
+        async with httpx.AsyncClient(timeout=6000) as client:
+            async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                        content = chunk.get("message", {}).get("content", "")
+                        if content:
+                            yield content
+                    except Exception:
+                        pass
+
     async def _generate(self, prompt: str) -> str:
         """Legacy /api/generate endpoint — used for longer free-form outputs."""
         payload = {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
 import AppLayout from '../components/AppLayout'
 import api from '../lib/api'
+import { getAccessToken } from '../lib/auth'
 import {
   MessageSquare,
   Plus,
@@ -24,6 +25,151 @@ function getStoredSessionId() {
   return localStorage.getItem(SESSION_STORAGE_KEY) || ''
 }
 
+function CodeBlock({ rawCode }) {
+  const [copied, setCopied] = useState(false)
+
+  // Extract language and code body
+  const match = rawCode.match(/^```(\w*)\n([\s\S]*?)```$/)
+  const lang = match ? match[1] : 'code'
+  const code = match ? match[2].trim() : rawCode.replace(/```/g, '').trim()
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(code)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <div className="my-3 border border-slate-800 rounded-lg overflow-hidden bg-slate-950 shadow-lg max-w-full">
+      <div className="flex items-center justify-between px-4 py-1.5 bg-slate-900 border-b border-slate-800 text-[10px] font-mono text-slate-400 select-none">
+        <span>{lang.toUpperCase()}</span>
+        <button
+          onClick={handleCopy}
+          className="px-2 py-0.5 rounded border border-slate-700 bg-slate-850 hover:bg-slate-800 text-slate-350 hover:text-white transition active:scale-95 text-[9px] font-sans font-semibold cursor-pointer"
+        >
+          {copied ? 'Copied!' : 'Copy Code'}
+        </button>
+      </div>
+      <pre className="p-3.5 overflow-x-auto text-[11px] font-mono text-blue-100 bg-slate-950/80 leading-relaxed custom-scrollbar">
+        <code>{code}</code>
+      </pre>
+    </div>
+  )
+}
+
+function parseInlineElements(text) {
+  const regex = /(\*\*.*?\*\*|`.*?`)/g
+  const tokens = text.split(regex)
+  return tokens.map((token, idx) => {
+    if (token.startsWith('**') && token.endsWith('**')) {
+      return <strong key={idx} className="font-bold text-slate-100">{token.slice(2, -2)}</strong>
+    }
+    if (token.startsWith('`') && token.endsWith('`')) {
+      return <code key={idx} className="bg-slate-900 border border-slate-800/80 px-1.5 py-0.5 rounded font-mono text-[10px] text-blue-300 mx-0.5 font-semibold">{token.slice(1, -1)}</code>
+    }
+    return token
+  })
+}
+
+function renderPlainTextBlock(blockText) {
+  const lines = blockText.split('\n')
+  const renderedLines = []
+  let currentList = []
+
+  const flushList = () => {
+    if (currentList.length > 0) {
+      renderedLines.push(
+        <ul key={`list-${renderedLines.length}`} className="list-disc pl-5 my-2 space-y-1">
+          {currentList}
+        </ul>
+      )
+      currentList = []
+    }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const trimmedLine = line.trim()
+
+    // Headers
+    if (trimmedLine.startsWith('#')) {
+      flushList()
+      const match = trimmedLine.match(/^(#{1,6})\s+(.*)$/)
+      if (match) {
+        const level = match[1].length
+        const title = match[2]
+        const headerClasses = 
+          level === 1 ? 'text-lg font-bold text-slate-100 mt-4 mb-2 border-b border-slate-800/60 pb-1' :
+          level === 2 ? 'text-base font-semibold text-slate-200 mt-3.5 mb-2' :
+          'text-xs font-bold text-slate-350 mt-2.5 mb-1.5 uppercase tracking-wider'
+        renderedLines.push(
+          <div key={`h-${i}`} className={headerClasses}>
+            {parseInlineElements(title)}
+          </div>
+        )
+        continue
+      }
+    }
+
+    // Lists (unordered)
+    if (trimmedLine.startsWith('- ') || trimmedLine.startsWith('* ')) {
+      const itemText = trimmedLine.slice(2)
+      currentList.push(
+        <li key={`li-${i}`} className="text-slate-300 leading-relaxed text-xs">
+          {parseInlineElements(itemText)}
+        </li>
+      )
+      continue
+    }
+
+    // Lists (ordered)
+    const orderedMatch = trimmedLine.match(/^(\d+)\.\s+(.*)$/)
+    if (orderedMatch) {
+      flushList()
+      renderedLines.push(
+        <div key={`ol-${i}`} className="flex gap-2 pl-1.5 my-1.5 text-slate-300 text-xs">
+          <span className="font-mono text-blue-400 font-semibold select-none">{orderedMatch[1]}.</span>
+          <span className="flex-1 leading-relaxed">{parseInlineElements(orderedMatch[2])}</span>
+        </div>
+      )
+      continue
+    }
+
+    // Blank lines
+    if (trimmedLine === '') {
+      flushList()
+      renderedLines.push(<div key={`br-${i}`} className="h-2" />)
+      continue
+    }
+
+    // Normal Paragraph
+    flushList()
+    renderedLines.push(
+      <p key={`p-${i}`} className="my-2 text-slate-300 leading-relaxed text-xs">
+        {parseInlineElements(line)}
+      </p>
+    )
+  }
+
+  flushList()
+  return renderedLines
+}
+
+function renderMessageContent(content) {
+  if (!content) return null
+
+  // Split by code blocks
+  const parts = content.split(/(```[\s\S]*?```)/g)
+
+  return parts.map((part, index) => {
+    if (part.startsWith('```') && part.endsWith('```')) {
+      return <CodeBlock key={index} rawCode={part} />
+    } else {
+      return <div key={index}>{renderPlainTextBlock(part)}</div>
+    }
+  })
+}
+
 export default function ThreatHunt() {
   const [sessionId, setSessionId] = useState(getStoredSessionId())
   const [sessions, setSessions] = useState([])
@@ -34,7 +180,6 @@ export default function ThreatHunt() {
   
   // Voice transcription states
   const [isRecording, setIsRecording] = useState(false)
-  const [recognition, setRecognition] = useState(null)
   
   // Text-to-Speech states
   const [speakingMsgId, setSpeakingMsgId] = useState(null)
@@ -45,6 +190,16 @@ export default function ThreatHunt() {
 
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
+  const recognitionRef = useRef(null)
+
+  // Clean up speech recognition on unmount
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop()
+      }
+    }
+  }, [])
 
   // Load all sessions
   async function loadSessions() {
@@ -80,39 +235,7 @@ export default function ThreatHunt() {
     }
   }
 
-  // Set up Speech Recognition
-  useEffect(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (SpeechRecognition) {
-      const rec = new SpeechRecognition()
-      rec.continuous = true
-      rec.interimResults = true
-      rec.lang = 'en-US'
-
-      rec.onresult = (event) => {
-        let transcript = ''
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          transcript += event.results[i][0].transcript
-        }
-        setInput(prev => {
-          // Append transcript to existing text
-          const trimmed = prev.trim()
-          return trimmed ? `${trimmed} ${transcript}` : transcript
-        })
-      }
-
-      rec.onerror = (event) => {
-        console.error('Speech recognition error:', event.error)
-        setIsRecording(false)
-      }
-
-      rec.onend = () => {
-        setIsRecording(false)
-      }
-
-      setRecognition(rec)
-    }
-  }, [])
+  // Speech recognition is now instantiated dynamically inside toggleRecording to prevent bugs
 
   // Speech synthesis toggle
   const togglePlaySpeech = (message) => {
@@ -171,18 +294,67 @@ export default function ThreatHunt() {
     }
   }, [input])
 
-  // Start/Stop recording voice dictation
+  // Start/Stop recording voice dictation dynamically
   const toggleRecording = () => {
-    if (!recognition) {
-      alert('Speech Recognition is not supported in this browser. Please use Chrome, Safari or Edge.')
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SpeechRecognition) {
+      alert('Speech Recognition is not supported on Firefox by default. To enable it, type "about:config" in the URL bar, search for "media.webspeech.recognition.enable" and set it to true.')
       return
     }
 
     if (isRecording) {
-      recognition.stop()
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop()
+        } catch (err) {
+          console.error('Failed to stop speech recognition:', err)
+        }
+      }
+      setIsRecording(false)
     } else {
-      setIsRecording(true)
-      recognition.start()
+      const rec = new SpeechRecognition()
+      rec.continuous = false
+      rec.interimResults = false
+      rec.lang = 'en-US'
+
+      rec.onstart = () => {
+        setIsRecording(true)
+      }
+
+      rec.onresult = (event) => {
+        let transcript = ''
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          if (event.results[i].isFinal) {
+            transcript += event.results[i][0].transcript
+          }
+        }
+        if (transcript) {
+          setInput(prev => {
+            const trimmed = prev.trim()
+            return trimmed ? `${trimmed} ${transcript.trim()}` : transcript.trim()
+          })
+        }
+      }
+
+      rec.onerror = (event) => {
+        console.error('Speech recognition error:', event.error)
+        setIsRecording(false)
+      }
+
+      rec.onend = () => {
+        setIsRecording(false)
+        recognitionRef.current = null
+      }
+
+      recognitionRef.current = rec
+      try {
+        setIsRecording(true)
+        rec.start()
+      } catch (err) {
+        console.error('Failed to start speech recognition:', err)
+        setIsRecording(false)
+        recognitionRef.current = null
+      }
     }
   }
 
@@ -197,40 +369,82 @@ export default function ThreatHunt() {
     setInput('')
     
     // Stop voice if recording
-    if (isRecording && recognition) {
-      recognition.stop()
+    if (isRecording && recognitionRef.current) {
+      recognitionRef.current.stop()
     }
 
-    // Optimistically add user message to layout
+    const userMsgId = Date.now()
     const tempUserMsg = {
-      id: Date.now(),
+      id: userMsgId,
       role: 'user',
       content: trimmed,
       created_at: new Date().toISOString()
     }
-    setMessages(prev => [...prev, tempUserMsg])
+
+    const assistantMsgId = userMsgId + 1
+    const tempAssistantMsg = {
+      id: assistantMsgId,
+      role: 'assistant',
+      content: '',
+      created_at: new Date().toISOString()
+    }
+
+    setMessages(prev => [...prev, tempUserMsg, tempAssistantMsg])
 
     try {
-      const response = await api.post('/threat-hunt/messages', { 
-        message: trimmed, 
-        session_id: sessionId || undefined 
-      })
-      const nextSessionId = response.data?.session_id
+      const token = getAccessToken()
+      const baseURL = import.meta.env.VITE_API_BASE_URL ?? '/api'
       
+      const response = await fetch(`${baseURL}/threat-hunt/messages/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          message: trimmed,
+          session_id: sessionId || undefined
+        })
+      })
+
+      if (!response.ok) {
+        throw new Error('Streaming request failed')
+      }
+
+      const nextSessionId = response.headers.get('X-Session-ID')
       if (nextSessionId && nextSessionId !== sessionId) {
         localStorage.setItem(SESSION_STORAGE_KEY, nextSessionId)
         setSessionId(nextSessionId)
       }
-      
-      // Reload everything
-      await Promise.all([
-        loadSessions(),
-        loadMessages(nextSessionId || sessionId)
-      ])
-    } catch {
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let done = false
+      let streamContent = ''
+
+      while (!done) {
+        const { value, done: doneReading } = await reader.read()
+        done = doneReading
+        if (value) {
+          const chunk = decoder.decode(value, { stream: !done })
+          streamContent += chunk
+          setMessages(prev => prev.map(m => {
+            if (m.id === assistantMsgId) {
+              return { ...m, content: streamContent }
+            }
+            return m
+          }))
+        }
+      }
+
+      // Reload sessions to update title/timestamps
+      await loadSessions()
+
+    } catch (err) {
+      console.error(err)
       setError('Threat Hunt AI is unavailable or request failed.')
-      // Rollback optimistic user message to prevent UI confusion
-      setMessages(prev => prev.filter(m => m.id !== tempUserMsg.id))
+      // Rollback optimistic messages
+      setMessages(prev => prev.filter(m => m.id !== assistantMsgId && m.id !== tempUserMsg.id))
     } finally {
       setBusy(false)
     }
@@ -431,13 +645,13 @@ export default function ThreatHunt() {
                     </div>
 
                     {/* Chat Bubble */}
-                    <div className="flex flex-col gap-1.5">
-                      <div className={`p-3.5 rounded-2xl text-xs leading-relaxed whitespace-pre-wrap ${
+                    <div className="flex flex-col gap-1.5 max-w-full">
+                      <div className={`p-3.5 rounded-2xl text-xs leading-relaxed ${
                         isUser 
-                          ? 'bg-blue-600/90 text-white rounded-tr-none border border-blue-500/30' 
-                          : 'bg-slate-900/90 text-slate-200 rounded-tl-none border border-slate-850'
+                          ? 'bg-blue-600/90 text-white rounded-tr-none border border-blue-500/30 whitespace-pre-wrap' 
+                          : 'bg-slate-900/90 text-slate-200 rounded-tl-none border border-slate-850 w-full overflow-hidden'
                       }`}>
-                        {msg.content}
+                        {isUser ? msg.content : renderMessageContent(msg.content)}
                       </div>
                       
                       {/* Audio Playback Controls for AI replies */}
@@ -473,7 +687,7 @@ export default function ThreatHunt() {
             )}
             
             {/* Typing Loader Indicator */}
-            {busy && (
+            {busy && (messages.length === 0 || messages[messages.length - 1]?.content === '') && (
               <div className="flex gap-3 max-w-[85%] mr-auto items-center">
                 <div className="w-8 h-8 rounded-lg flex items-center justify-center border bg-slate-900 border-slate-800 text-slate-400 flex-shrink-0">
                   <Shield className="w-4 h-4 text-blue-400" />

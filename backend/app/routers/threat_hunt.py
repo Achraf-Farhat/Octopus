@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -158,3 +159,81 @@ async def send_message(
     )
 
     return ThreatHuntReply(session_id=active_session, reply=assistant_message.content)
+
+
+@router.post("/messages/stream")
+async def send_message_stream(
+    payload: ThreatHuntMessageCreate,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    content = payload.message.strip()
+    if not content:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Message cannot be empty")
+
+    active_session = payload.session_id or uuid4().hex
+
+    user_message = ThreatHuntMessage(
+        user_id=current_user.id,
+        session_id=active_session,
+        role="user",
+        content=content,
+    )
+    db.add(user_message)
+    db.commit()
+
+    recent_messages = (
+        db.query(ThreatHuntMessage)
+        .filter(ThreatHuntMessage.user_id == current_user.id, ThreatHuntMessage.session_id == active_session)
+        .order_by(ThreatHuntMessage.id.desc())
+        .limit(12)
+        .all()
+    )
+    recent_messages = list(reversed(recent_messages))
+
+    system = threat_hunt_system_prompt()
+    chat_messages = [{"role": "system", "content": system}]
+    for message in recent_messages:
+        role = "assistant" if message.role == "assistant" else "user"
+        chat_messages.append({"role": role, "content": message.content})
+
+    async def event_generator():
+        accumulated_reply = ""
+        try:
+            async for chunk in OllamaClient().chat_stream(chat_messages):
+                accumulated_reply += chunk
+                yield chunk
+        except Exception:
+            fallback = _fallback_reply(content)
+            accumulated_reply = fallback
+            yield fallback
+        finally:
+            try:
+                reply_text = accumulated_reply.strip() or "No response returned."
+                assistant_message = ThreatHuntMessage(
+                    user_id=current_user.id,
+                    session_id=active_session,
+                    role="assistant",
+                    content=reply_text,
+                )
+                db.add(assistant_message)
+                db.commit()
+
+                write_audit_log(
+                    db,
+                    user_id=current_user.id,
+                    action="threat_hunt.message",
+                    resource_type="threat_hunt_session",
+                    resource_id=active_session,
+                    details={"message_length": len(content)},
+                    ip_address=request.client.host if request.client else None,
+                )
+            except Exception:
+                pass
+
+    headers = {
+        "X-Session-ID": active_session,
+        "Access-Control-Expose-Headers": "X-Session-ID",
+    }
+    return StreamingResponse(event_generator(), media_type="text/plain", headers=headers)
