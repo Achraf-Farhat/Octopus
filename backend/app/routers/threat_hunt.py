@@ -25,6 +25,59 @@ def _fallback_reply(message: str) -> str:
     )
 
 
+@router.get("/sessions")
+def list_sessions(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from sqlalchemy import func
+    # Group sessions and fetch the earliest message ID to get the title and start time
+    subquery = (
+        db.query(
+            ThreatHuntMessage.session_id,
+            func.min(ThreatHuntMessage.id).label("first_msg_id")
+        )
+        .filter(ThreatHuntMessage.user_id == current_user.id)
+        .group_by(ThreatHuntMessage.session_id)
+        .subquery()
+    )
+    
+    sessions = (
+        db.query(
+            ThreatHuntMessage.session_id,
+            ThreatHuntMessage.content,
+            ThreatHuntMessage.created_at
+        )
+        .join(subquery, ThreatHuntMessage.id == subquery.c.first_msg_id)
+        .order_by(ThreatHuntMessage.created_at.desc())
+        .all()
+    )
+    
+    result = []
+    for s in sessions:
+        title = s.content[:45] + "..." if len(s.content) > 45 else s.content
+        result.append({
+            "session_id": s.session_id,
+            "title": title,
+            "created_at": s.created_at
+        })
+    return result
+
+
+@router.delete("/sessions/{session_id}")
+def delete_session(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    db.query(ThreatHuntMessage).filter(
+        ThreatHuntMessage.user_id == current_user.id,
+        ThreatHuntMessage.session_id == session_id
+    ).delete()
+    db.commit()
+    return {"status": "success", "message": "Session deleted successfully"}
+
+
 @router.get("/messages", response_model=list[ThreatHuntMessageRead])
 def list_messages(
     session_id: str,
