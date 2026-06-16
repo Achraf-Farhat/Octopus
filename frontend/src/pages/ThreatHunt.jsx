@@ -188,9 +188,26 @@ export default function ThreatHunt() {
   const [loadingSessions, setLoadingSessions] = useState(false)
   const [loadingMessages, setLoadingMessages] = useState(false)
 
+  // Advanced Voice UI states
+  const [voiceMode, setVoiceMode] = useState(false)
+  const [voiceState, setVoiceState] = useState('listening') // listening, thinking, speaking
+
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
   const recognitionRef = useRef(null)
+
+  // Voice UI refs
+  const abortControllerRef = useRef(null)
+  const canvasRef = useRef(null)
+  const audioContextRef = useRef(null)
+  const analyserRef = useRef(null)
+  const micStreamRef = useRef(null)
+  const animationFrameIdRef = useRef(null)
+  const speechQueueRef = useRef([])
+  const isPlayingSpeechRef = useRef(false)
+  const activeUtteranceRef = useRef(null)
+  const sentenceBufferRef = useRef('')
+  const isStreamingRef = useRef(false)
 
   // Clean up speech recognition on unmount
   useEffect(() => {
@@ -200,6 +217,472 @@ export default function ThreatHunt() {
       }
     }
   }, [])
+
+  // Start & Stop Mic Visualizer for Canvas
+  const startMicVisualizer = async () => {
+    stopMicVisualizer()
+    if (!canvasRef.current) return
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      micStreamRef.current = stream
+
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext
+      const audioCtx = new AudioContextClass()
+      audioContextRef.current = audioCtx
+
+      const analyser = audioCtx.createAnalyser()
+      analyser.fftSize = 256
+      analyserRef.current = analyser
+
+      const source = audioCtx.createMediaStreamSource(stream)
+      source.connect(analyser)
+
+      const bufferLength = analyser.frequencyBinCount
+      const dataArray = new Uint8Array(bufferLength)
+
+      const canvas = canvasRef.current
+      const ctx = canvas.getContext('2d')
+
+      const draw = () => {
+        if (!canvasRef.current || voiceState !== 'listening') return
+        animationFrameIdRef.current = requestAnimationFrame(draw)
+
+        analyser.getByteFrequencyData(dataArray)
+
+        // Clear canvas
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+        let total = 0
+        for (let i = 0; i < bufferLength; i++) {
+          total += dataArray[i]
+        }
+        const average = total / bufferLength
+        const intensity = average / 255
+
+        ctx.beginPath()
+        ctx.strokeStyle = `rgba(59, 130, 246, ${0.4 + intensity * 0.6})`
+        ctx.lineWidth = 3 + intensity * 4
+        ctx.shadowBlur = 10 + intensity * 15
+        ctx.shadowColor = '#3b82f6'
+
+        const width = canvas.width
+        const height = canvas.height
+        const midY = height / 2
+
+        ctx.moveTo(0, midY)
+
+        const points = 100
+        const amplitude = 3 + intensity * 35
+        const frequency = 4
+
+        for (let i = 0; i <= points; i++) {
+          const x = (i / points) * width
+          const timeFactor = Date.now() * 0.007
+          const y = midY + Math.sin((i / points) * Math.PI * 2 * frequency + timeFactor) * amplitude
+          ctx.lineTo(x, y)
+        }
+
+        ctx.stroke()
+        ctx.shadowBlur = 0
+      }
+
+      draw()
+    } catch (err) {
+      console.warn('Microphone visualization failed or permission denied:', err)
+    }
+  }
+
+  const stopMicVisualizer = () => {
+    if (animationFrameIdRef.current) {
+      cancelAnimationFrame(animationFrameIdRef.current)
+      animationFrameIdRef.current = null
+    }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(track => track.stop())
+      micStreamRef.current = null
+    }
+    if (audioContextRef.current) {
+      if (audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close()
+      }
+      audioContextRef.current = null
+    }
+    if (analyserRef.current) {
+      analyserRef.current = null
+    }
+  }
+
+  // Effect to manage mic visualizer loop based on voiceState
+  useEffect(() => {
+    if (voiceMode && voiceState === 'listening') {
+      startMicVisualizer()
+    } else {
+      stopMicVisualizer()
+    }
+    return () => stopMicVisualizer()
+  }, [voiceMode, voiceState])
+
+  // Low latency Speech Synthesis Queue Player
+  const speakNextInQueue = () => {
+    if (!voiceMode) return
+    if (speechQueueRef.current.length === 0) {
+      isPlayingSpeechRef.current = false
+      if (!isStreamingRef.current) {
+        startVoiceListening()
+      }
+      return
+    }
+
+    isPlayingSpeechRef.current = true
+    setVoiceState('speaking')
+    const textToSpeak = speechQueueRef.current.shift()
+
+    const cleanText = textToSpeak
+      .replace(/[#*`_-]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    if (!cleanText) {
+      speakNextInQueue()
+      return
+    }
+
+    const utterance = new SpeechSynthesisUtterance(cleanText)
+    activeUtteranceRef.current = utterance
+
+    utterance.onend = () => {
+      activeUtteranceRef.current = null
+      speakNextInQueue()
+    }
+
+    utterance.onerror = (e) => {
+      console.error('Speech synthesis error:', e)
+      activeUtteranceRef.current = null
+      speakNextInQueue()
+    }
+
+    window.speechSynthesis.speak(utterance)
+  }
+
+  // Stream text chunk processor for sentences
+  const handleIncomingStreamChunk = (chunk) => {
+    sentenceBufferRef.current += chunk
+    const sentences = []
+    let searchIndex = 0
+    
+    while (true) {
+      const match = sentenceBufferRef.current.slice(searchIndex).match(/[.?!](\s+|$)/)
+      const newlineMatch = sentenceBufferRef.current.slice(searchIndex).indexOf('\n')
+      
+      if (!match && newlineMatch === -1) {
+        break
+      }
+      
+      let endIdx = -1
+      let splitLen = 1
+      
+      if (match && newlineMatch !== -1) {
+        if (match.index + searchIndex < newlineMatch) {
+          endIdx = match.index + searchIndex + 1
+          splitLen = match[0].length
+        } else {
+          endIdx = newlineMatch
+          splitLen = 1
+        }
+      } else if (match) {
+        endIdx = match.index + searchIndex + 1
+        splitLen = match[0].length
+      } else {
+        endIdx = newlineMatch
+        splitLen = 1
+      }
+      
+      const sentence = sentenceBufferRef.current.slice(0, endIdx).trim()
+      sentenceBufferRef.current = sentenceBufferRef.current.slice(endIdx + splitLen)
+      searchIndex = 0
+      
+      if (sentence) {
+        sentences.push(sentence)
+      }
+    }
+
+    if (sentences.length > 0) {
+      speechQueueRef.current.push(...sentences)
+      if (!isPlayingSpeechRef.current) {
+        speakNextInQueue()
+      }
+    }
+  }
+
+  const flushRemainingSentenceBuffer = () => {
+    const remaining = sentenceBufferRef.current.trim()
+    if (remaining) {
+      speechQueueRef.current.push(remaining)
+      sentenceBufferRef.current = ''
+      if (!isPlayingSpeechRef.current) {
+        speakNextInQueue()
+      }
+    }
+  }
+
+  // Interruption trigger / Barge-in
+  const handleInterruptVoice = () => {
+    if (!voiceMode) return
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      abortControllerRef.current = null
+    }
+
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel()
+    }
+
+    speechQueueRef.current = []
+    isPlayingSpeechRef.current = false
+    sentenceBufferRef.current = ''
+    isStreamingRef.current = false
+    activeUtteranceRef.current = null
+
+    startVoiceListening()
+  }
+
+  // Key listener for spacebar barge-in
+  useEffect(() => {
+    const handleGlobalKeyDown = (e) => {
+      if (!voiceMode) return
+      if (e.code === 'Space') {
+        e.preventDefault()
+        handleInterruptVoice()
+      }
+    }
+    window.addEventListener('keydown', handleGlobalKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleGlobalKeyDown)
+    }
+  }, [voiceMode, voiceState])
+
+  // Speech Recognition listener loop in Voice Mode
+  const startVoiceListening = () => {
+    if (!voiceMode) return
+    setVoiceState('listening')
+    speechQueueRef.current = []
+    isPlayingSpeechRef.current = false
+    sentenceBufferRef.current = ''
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SpeechRecognition) return
+
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop()
+      } catch {}
+    }
+
+    const rec = new SpeechRecognition()
+    rec.continuous = false
+    rec.interimResults = false
+    rec.lang = 'en-US'
+
+    rec.onresult = async (event) => {
+      let transcript = ''
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          transcript += event.results[i][0].transcript
+        }
+      }
+      const trimmed = transcript.trim()
+      if (trimmed) {
+        submitVoiceQuery(trimmed)
+      } else {
+        startVoiceListening()
+      }
+    }
+
+    rec.onerror = (e) => {
+      console.error('Speech recognition error in voice mode:', e)
+      if (e.error !== 'aborted') {
+        setTimeout(() => {
+          if (voiceState === 'listening') {
+            startVoiceListening()
+          }
+        }, 1000)
+      }
+    }
+
+    rec.onend = () => {
+      if (voiceMode && voiceState === 'listening' && !recognitionRef.current) {
+        startVoiceListening()
+      }
+    }
+
+    recognitionRef.current = rec
+    try {
+      rec.start()
+    } catch (err) {
+      console.error('Failed to start speech recognition in voice mode:', err)
+    }
+  }
+
+  // Voice Query Submission
+  const submitVoiceQuery = async (queryText) => {
+    if (!queryText || isStreamingRef.current) return
+
+    setVoiceState('thinking')
+    isStreamingRef.current = true
+
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop()
+      } catch {}
+      recognitionRef.current = null
+    }
+
+    const userMsgId = Date.now()
+    const tempUserMsg = {
+      id: userMsgId,
+      role: 'user',
+      content: queryText,
+      created_at: new Date().toISOString()
+    }
+
+    const assistantMsgId = userMsgId + 1
+    const tempAssistantMsg = {
+      id: assistantMsgId,
+      role: 'assistant',
+      content: '',
+      created_at: new Date().toISOString()
+    }
+
+    setMessages(prev => [...prev, tempUserMsg, tempAssistantMsg])
+
+    try {
+      const token = getAccessToken()
+      const baseURL = import.meta.env.VITE_API_BASE_URL ?? '/api'
+      
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+      }
+      abortControllerRef.current = new AbortController()
+
+      const response = await fetch(`${baseURL}/threat-hunt/messages/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          message: queryText,
+          session_id: sessionId || undefined
+        }),
+        signal: abortControllerRef.current.signal
+      })
+
+      if (!response.ok) {
+        throw new Error('Streaming request failed')
+      }
+
+      const nextSessionId = response.headers.get('X-Session-ID')
+      if (nextSessionId && nextSessionId !== sessionId) {
+        localStorage.setItem(SESSION_STORAGE_KEY, nextSessionId)
+        setSessionId(nextSessionId)
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let done = false
+      let streamContent = ''
+
+      while (!done) {
+        const { value, done: doneReading } = await reader.read()
+        done = doneReading
+        if (value) {
+          const chunk = decoder.decode(value, { stream: !done })
+          streamContent += chunk
+          
+          setMessages(prev => prev.map(m => {
+            if (m.id === assistantMsgId) {
+              return { ...m, content: streamContent }
+            }
+            return m
+          }))
+
+          handleIncomingStreamChunk(chunk)
+        }
+      }
+
+      flushRemainingSentenceBuffer()
+      isStreamingRef.current = false
+      
+      if (!isPlayingSpeechRef.current && speechQueueRef.current.length === 0) {
+        startVoiceListening()
+      }
+
+      await loadSessions()
+
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        console.log('Voice stream fetch aborted')
+        return
+      }
+      console.error(err)
+      setError('Threat Hunt AI is unavailable or request failed.')
+      setMessages(prev => prev.filter(m => m.id !== assistantMsgId && m.id !== tempUserMsg.id))
+      isStreamingRef.current = false
+      startVoiceListening()
+    }
+  }
+
+  // Voice mode entrance/exit
+  const enterVoiceMode = () => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel()
+    }
+    setSpeakingMsgId(null)
+    setVoiceMode(true)
+    setVoiceState('listening')
+  }
+
+  const exitVoiceMode = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      abortControllerRef.current = null
+    }
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel()
+    }
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop()
+      } catch {}
+      recognitionRef.current = null
+    }
+    setVoiceMode(false)
+    setBusy(false)
+    isStreamingRef.current = false
+    speechQueueRef.current = []
+  }
+
+  // Effect to reactively start voice listening on mode toggle
+  useEffect(() => {
+    if (voiceMode) {
+      startVoiceListening()
+    } else {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop()
+        } catch {}
+        recognitionRef.current = null
+      }
+    }
+    return () => {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop()
+        } catch {}
+      }
+    }
+  }, [voiceMode])
 
   // Load all sessions
   async function loadSessions() {
@@ -518,6 +1001,16 @@ export default function ThreatHunt() {
           .custom-scrollbar::-webkit-scrollbar-thumb:hover {
             background: #334155;
           }
+          @keyframes orb-pulse-idle {
+            0%, 100% { transform: scale(1); box-shadow: 0 0 25px rgba(59, 130, 246, 0.4); }
+            50% { transform: scale(1.05); box-shadow: 0 0 40px rgba(59, 130, 246, 0.6); }
+          }
+          @keyframes orb-pulse-speaking {
+            0%, 100% { transform: scale(1.05); box-shadow: 0 0 35px rgba(168, 85, 247, 0.5); }
+            25% { transform: scale(1.12); box-shadow: 0 0 50px rgba(168, 85, 247, 0.7); }
+            50% { transform: scale(1.03); box-shadow: 0 0 30px rgba(59, 130, 246, 0.4); }
+            75% { transform: scale(1.15); box-shadow: 0 0 60px rgba(168, 85, 247, 0.8); }
+          }
         `}</style>
 
         {/* Sidebar: Chat History */}
@@ -594,6 +1087,15 @@ export default function ThreatHunt() {
                 <p className="text-[10px] text-slate-500 font-mono">Session ID: {sessionId || 'New'}</p>
               </div>
             </div>
+            
+            {/* Start Voice Mode Button */}
+            <button
+              onClick={enterVoiceMode}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-950 border border-blue-800/80 text-blue-300 hover:bg-blue-900 transition hover:border-blue-500 cursor-pointer"
+            >
+              <Volume2 className="w-3.5 h-3.5 animate-pulse" />
+              Voice Chat
+            </button>
           </div>
 
           {/* Conversation list / Landing state */}
@@ -750,6 +1252,114 @@ export default function ThreatHunt() {
               <span>History length: {orderedMessages.length} messages</span>
             </div>
           </div>
+
+          {/* Voice Mode Overlay */}
+          {voiceMode && (
+            <div className="absolute inset-0 z-50 bg-slate-950/95 flex flex-col justify-between items-center p-8 backdrop-blur-xl animate-fade-in animate-duration-300">
+              {/* Overlay Header */}
+              <div className="w-full flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-blue-400 animate-pulse" />
+                  <span className="text-[10px] uppercase tracking-wider font-mono text-slate-400">Conversational Voice Session</span>
+                </div>
+                <button
+                  onClick={exitVoiceMode}
+                  className="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200 transition active:scale-95 cursor-pointer"
+                >
+                  Exit Voice Mode
+                </button>
+              </div>
+
+              {/* Central Agent Orb */}
+              <div className="flex-1 flex flex-col items-center justify-center gap-4">
+                <div className="relative flex items-center justify-center w-64 h-64">
+                  {/* Aura rings */}
+                  {voiceState === 'speaking' && (
+                    <>
+                      <div className="absolute w-full h-full rounded-full bg-purple-500/10 animate-ping" />
+                      <div className="absolute w-4/5 h-4/5 rounded-full bg-blue-500/15 animate-pulse" />
+                    </>
+                  )}
+                  {voiceState === 'thinking' && (
+                    <div className="absolute w-full h-full rounded-full border-2 border-dashed border-blue-500/30 animate-spin" style={{ animationDuration: '6s' }} />
+                  )}
+
+                  {/* Main Orb */}
+                  <div
+                    onClick={voiceState === 'speaking' ? handleInterruptVoice : undefined}
+                    className={`w-48 h-48 rounded-full flex flex-col items-center justify-center cursor-pointer select-none relative z-10 transition-all duration-500 border ${
+                      voiceState === 'speaking'
+                        ? 'bg-gradient-to-tr from-purple-900/90 to-blue-900/90 border-purple-500/50 shadow-2xl animate-pulse'
+                        : voiceState === 'thinking'
+                        ? 'bg-slate-900/95 border-blue-500/40 shadow-xl'
+                        : 'bg-gradient-to-tr from-blue-950/80 to-slate-900/95 border-slate-800 shadow-lg hover:border-blue-500/50'
+                    }`}
+                    style={{
+                      animation: voiceState === 'speaking' 
+                        ? 'orb-pulse-speaking 3s infinite ease-in-out' 
+                        : voiceState === 'idle' || voiceState === 'listening'
+                        ? 'orb-pulse-idle 4s infinite ease-in-out' 
+                        : 'none'
+                    }}
+                  >
+                    {/* Rotating thinking border */}
+                    {voiceState === 'thinking' && (
+                      <div className="absolute inset-0 rounded-full border-t-2 border-b-2 border-blue-500 animate-spin" />
+                    )}
+
+                    {/* Icon / Indicator inside the circle */}
+                    {voiceState === 'speaking' ? (
+                      <div className="flex flex-col items-center gap-1.5 text-center px-4">
+                        <Volume2 className="w-8 h-8 text-purple-400 animate-bounce" />
+                        <span className="text-[11px] font-bold tracking-wider uppercase text-purple-300">Speaking</span>
+                        <span className="text-[9px] text-slate-400 opacity-80">Tap to interrupt</span>
+                      </div>
+                    ) : voiceState === 'thinking' ? (
+                      <div className="flex flex-col items-center gap-1.5">
+                        <RefreshCw className="w-8 h-8 text-blue-400 animate-spin" />
+                        <span className="text-[11px] font-bold tracking-wider uppercase text-blue-300">Thinking</span>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center gap-1.5 text-center px-4">
+                        <Mic className="w-8 h-8 text-blue-400 animate-pulse" />
+                        <span className="text-[11px] font-bold tracking-wider uppercase text-blue-300">Listening</span>
+                        <span className="text-[9px] text-slate-500 mt-1">Speak now...</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Status Hint */}
+                <span className="text-xs text-slate-500 font-mono text-center max-w-sm mt-4 leading-relaxed">
+                  {voiceState === 'speaking' 
+                    ? "The Copilot is responding. Tap the orb or press Space to interrupt."
+                    : voiceState === 'thinking'
+                    ? "Analyzing your request..."
+                    : "Microphone active. Describe what you'd like to investigate."}
+                </span>
+              </div>
+
+              {/* Bottom Real-time User Waveform Canvas */}
+              <div className="w-full max-w-lg flex flex-col items-center gap-4">
+                <div className="w-full h-16 bg-slate-900/30 border border-slate-800/40 rounded-2xl overflow-hidden relative">
+                  <canvas
+                    ref={canvasRef}
+                    width={512}
+                    height={64}
+                    className="w-full h-full block"
+                  />
+                  {voiceState !== 'listening' && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-slate-950/40 text-[10px] text-slate-600 font-mono">
+                      Waveform inactive while Copilot speaks
+                    </div>
+                  )}
+                </div>
+                <div className="text-[10px] text-slate-600 font-mono text-center">
+                  Press Spacebar at any time to interrupt
+                </div>
+              </div>
+            </div>
+          )}
 
           {error ? <div className="absolute top-16 left-4 right-4 error-banner z-30">{error}</div> : null}
         </div>
