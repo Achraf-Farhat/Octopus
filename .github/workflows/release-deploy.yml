@@ -88,5 +88,6 @@ jobs:
       - name: Pull and Rebuild Containers
         run: |
           cd /home/achraf/Octopus
+          echo "${{ secrets.VM_SUDO_PASSWORD }}" | sudo -S docker-compose down --remove-orphans
           echo "${{ secrets.VM_SUDO_PASSWORD }}" | sudo -S docker-compose pull
-          echo "${{ secrets.VM_SUDO_PASSWORD }}" | sudo -S docker-compose up -d --remove-orphans
+          echo "${{ secrets.VM_SUDO_PASSWORD }}" | sudo -S docker-compose up -d
