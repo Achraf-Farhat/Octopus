@@ -100,10 +100,10 @@ services:
       - "5000:80"
     depends_on:
       - backend
-
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
     container_name: cadvisor
+    privileged: true
     ports:
       - "8080:8080"
     volumes:
@@ -112,9 +112,12 @@ services:
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
       - /dev/disk/:/dev/disk:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
     devices:
       - /dev/kmsg
     restart: unless-stopped
+
 
   prometheus:
     image: prom/prometheus:v2.45.0
