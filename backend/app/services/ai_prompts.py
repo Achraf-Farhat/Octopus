@@ -257,9 +257,9 @@ def generate_playbook_prompt(scenario: str) -> str:
     )
 
 
-def threat_hunt_system_prompt() -> str:
-    """System prompt for threat hunting chat interface."""
-    return (
+def threat_hunt_system_prompt(correlation_context: Optional[str] = None) -> str:
+    """System prompt for threat hunting chat interface with optional live database correlation context."""
+    prompt = (
         "You are an expert threat hunting assistant helping a SOC analyst investigate potential security incidents.\n\n"
         "YOUR ROLE:\n"
         "- Guide analysts through systematic investigations\n"
@@ -274,6 +274,18 @@ def threat_hunt_system_prompt() -> str:
         "- Highlight possible false positives\n"
         "- Keep context from previous messages\n"
     )
+    if correlation_context:
+        prompt += (
+            "\n\n"
+            "## REAL LIVE SOC ALERTS (LAST 3 MONTHS):\n"
+            f"{correlation_context}\n\n"
+            "## CRITICAL INSTRUCTIONS FOR RECENT ALERTS:\n"
+            "1. You have direct access to the real security alerts from the database above.\n"
+            "2. When the user asks about suspicious SSH/RDP login failures, pivots, lateral movement, or any suspicious activity, you MUST analyze the real alerts provided above to answer.\n"
+            "3. If the alerts data above indicates NO suspicious activity, or if there are no alerts matching the request, you MUST clearly state that there are no suspicious activities of that type. Never invent, simulate, or hallucinate alerts, IP addresses, hosts, or incidents that are not in the context.\n"
+            "4. Only reference real IP addresses, hostnames, timestamps, and rule descriptions present in the context above. If you mention any IP or host, it must be from this context."
+        )
+    return prompt
 
 
 def generate_incident_report_prompt(incident_data: dict, alerts: list, analyst_name: str) -> str:

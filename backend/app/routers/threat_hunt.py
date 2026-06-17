@@ -10,6 +10,7 @@ from app.models.threat_hunt_message import ThreatHuntMessage
 from app.models.user import User
 from app.schemas.threat_hunt import ThreatHuntMessageCreate, ThreatHuntMessageRead, ThreatHuntReply
 from app.services.ai_prompts import threat_hunt_system_prompt
+from app.services.alert_correlator import get_correlation_context
 from app.services.audit import write_audit_log
 from app.services.ollama_client import OllamaClient
 
@@ -128,7 +129,8 @@ async def send_message(
     recent_messages = list(reversed(recent_messages))
 
     # Build structured message history for /api/chat
-    system = threat_hunt_system_prompt()
+    correlation = get_correlation_context(db)
+    system = threat_hunt_system_prompt(correlation_context=correlation)
     chat_messages = [{"role": "system", "content": system}]
     for message in recent_messages:
         role = "assistant" if message.role == "assistant" else "user"
@@ -192,7 +194,8 @@ async def send_message_stream(
     )
     recent_messages = list(reversed(recent_messages))
 
-    system = threat_hunt_system_prompt()
+    correlation = get_correlation_context(db)
+    system = threat_hunt_system_prompt(correlation_context=correlation)
     chat_messages = [{"role": "system", "content": system}]
     for message in recent_messages:
         role = "assistant" if message.role == "assistant" else "user"
