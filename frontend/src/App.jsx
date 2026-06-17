@@ -2,7 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import ProtectedRoute from './components/ProtectedRoute'
 import Dashboard from './pages/Dashboard'
-import Incidents from './pages/Incidents'
+import Cases from './pages/Cases'
 import Login from './pages/Login'
 import Playbooks from './pages/Playbooks'
 import IntegrationHub from './pages/IntegrationHub'
@@ -35,10 +35,10 @@ export default function App() {
             }
           />
           <Route
-            path="/incidents"
+            path="/cases"
             element={
               <ProtectedRoute>
-                <Incidents />
+                <Cases />
               </ProtectedRoute>
             }
           />

@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -9,6 +9,7 @@ from app.models.alert import Alert
 from app.models.search_history import SearchHistory
 from app.models.user import User
 from app.services.wazuh_client import WazuhClient
+from app.services.playbook_engine import evaluate_alerts_for_playbooks
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 
@@ -82,6 +83,7 @@ def _cache_summary(interval: str, alerts: list[Alert]) -> dict:
 
 @router.get("")
 async def list_alerts(
+    background_tasks: BackgroundTasks,
     query: str | None = None,
     nl_query: str | None = None,
     translated_query: str | None = None,
@@ -103,6 +105,7 @@ async def list_alerts(
 
         payload = response.get("data", {})
         items = payload.get("items", [])
+        new_alerts = []
 
         for item in items:
             wazuh_alert_id = (
@@ -117,18 +120,18 @@ async def list_alerts(
             if existing:
                 continue
 
-            db.add(
-                Alert(
-                    wazuh_alert_id=wazuh_alert_id,
-                    timestamp=_parse_timestamp(item.get("@timestamp")),
-                    rule_id=str(item.get("rule", {}).get("id")) if item.get("rule", {}).get("id") else None,
-                    severity=item.get("rule", {}).get("level"),
-                    src_ip=item.get("data", {}).get("srcip") or item.get("srcip"),
-                    dst_ip=item.get("data", {}).get("dstip") or item.get("dstip"),
-                    raw_data=item,
-                    status="new",
-                )
+            alert_obj = Alert(
+                wazuh_alert_id=wazuh_alert_id,
+                timestamp=_parse_timestamp(item.get("@timestamp")),
+                rule_id=str(item.get("rule", {}).get("id")) if item.get("rule", {}).get("id") else None,
+                severity=item.get("rule", {}).get("level"),
+                src_ip=item.get("data", {}).get("srcip") or item.get("srcip"),
+                dst_ip=item.get("data", {}).get("dstip") or item.get("dstip"),
+                raw_data=item,
+                status="new",
             )
+            db.add(alert_obj)
+            new_alerts.append(alert_obj)
 
     except RuntimeError as exc:
         external_error = str(exc)
@@ -160,6 +163,11 @@ async def list_alerts(
             )
         )
     db.commit()
+
+    if new_alerts:
+        alert_ids = [a.id for a in new_alerts]
+        background_tasks.add_task(evaluate_alerts_for_playbooks, alert_ids)
+
     return {
         "data": payload,
         "error": 0,

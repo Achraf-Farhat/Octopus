@@ -7,6 +7,7 @@ class PlaybookCreate(BaseModel):
     name: str
     trigger_condition: str | None = None
     steps: list[dict]
+    enabled: bool | None = True
 
 
 class PlaybookRead(BaseModel):
@@ -15,6 +16,7 @@ class PlaybookRead(BaseModel):
     trigger_condition: str | None = None
     steps: list[dict]
     created_by: int | None = None
+    enabled: bool
 
     class Config:
         from_attributes = True

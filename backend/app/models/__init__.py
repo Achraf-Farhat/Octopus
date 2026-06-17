@@ -3,7 +3,7 @@ from .audit_log import AuditLog
 from .refresh_token import RefreshToken
 from .alert import Alert
 from .ai_analysis import AIAnalysis
-from .incident import Incident
+from .case import Case
 from .custom_rule import CustomRule
 from .playbook import Playbook
 from .playbook_execution import PlaybookExecution

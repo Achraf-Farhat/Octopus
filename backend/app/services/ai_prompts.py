@@ -320,3 +320,24 @@ def generate_incident_report_prompt(incident_data: dict, alerts: list, analyst_n
         "Generate a complete Markdown incident report with sections for: Executive Summary, Attack Timeline, Technical Analysis, IOCs, Impact Assessment, Response Actions, Root Cause, Recommendations, Lessons Learned, and Appendix.\n"
         "Use UTC timestamps and specific actionable recommendations."
     )
+
+
+def ai_investigation_playbook_prompt(alert_description: str, severity: int, src_ip: str, agent_name: str, raw_alert: str) -> str:
+    """Prompt for automated playbook AI investigation node."""
+    return (
+        "You are an expert AI threat analyst performing an automated alert investigation.\n"
+        "Provide a professional security report based on these alert details:\n"
+        f"Alert Description: {alert_description}\n"
+        f"Severity Level: {severity}/15\n"
+        f"Source IP: {src_ip}\n"
+        f"Target Host / Agent: {agent_name}\n"
+        f"Raw Log Data:\n{raw_alert}\n\n"
+        "Generate a structured Markdown report containing exactly three main sections:\n"
+        "1. ### Description of What Happened\n"
+        "   Explain the event clearly and concisely.\n"
+        "2. ### Investigation Summary\n"
+        "   Summarize technical indicators, severity, potential intent, and context.\n"
+        "3. ### Recommended Actions\n"
+        "   List concrete, prioritized containment and remediation steps.\n\n"
+        "Do not include intro/outro text, write only the three Markdown sections above."
+    )

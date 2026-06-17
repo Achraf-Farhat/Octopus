@@ -1,16 +1,93 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import re
-
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.playbook import Playbook
 from app.models.playbook_execution import PlaybookExecution
 from app.models.integration import Integration
 from app.models.alert import Alert
+from app.models.case import Case
+from app.models.user import User
 from app.services.connector_runner import resolve_variables, run_connector_action
+from app.services.email_service import send_playbook_email
+from app.services.ai_prompts import ai_investigation_playbook_prompt
+from app.services.ollama_client import OllamaClient
+
+
+def should_trigger_playbook(trigger_cond: str, alert: Alert) -> bool:
+    """
+    Evaluates whether an alert matches a playbook's trigger condition.
+    Supports:
+      - Severity level conditions: e.g. 'rule.level >= 10', 'severity >= 8'
+      - Rule ID conditions: e.g. 'rule.id == 5710', 'rule_id == 5716'
+    """
+    if not trigger_cond:
+        return False
+    cond = trigger_cond.strip().replace(" ", "")
+    
+    # 1. Severity triggers: rule.level>=X or severity>=X
+    severity_match = re.match(r"^(?:rule\.level|severity)(>=|>|==|<=|<)(\d+)$", cond, re.IGNORECASE)
+    if severity_match:
+        op, val_str = severity_match.groups()
+        val = int(val_str)
+        alert_sev = alert.severity or 0
+        if op == ">=": return alert_sev >= val
+        if op == ">": return alert_sev > val
+        if op == "==": return alert_sev == val
+        if op == "<=": return alert_sev <= val
+        if op == "<": return alert_sev < val
+
+    # 2. Rule ID triggers: rule.id==Y or rule_id==Y
+    rule_match = re.match(r"^(?:rule\.id|rule_id|rule)==(\d+)$", cond, re.IGNORECASE)
+    if rule_match:
+        val = rule_match.group(1)
+        return str(alert.rule_id) == str(val)
+
+    return False
+
+
+def evaluate_alerts_for_playbooks(alert_ids: list[int]):
+    """
+    Background worker task to evaluate playbooks against newly loaded alerts.
+    """
+    from app.db.session import SessionLocal
+    db = SessionLocal()
+    try:
+        playbooks = db.query(Playbook).filter(Playbook.enabled == True).all()
+        alerts = db.query(Alert).filter(Alert.id.in_(alert_ids)).all()
+        
+        for alert in alerts:
+            for playbook in playbooks:
+                # Filter out alerts that arrived before the playbook was enabled
+                if playbook.last_enabled_at and alert.timestamp:
+                    a_tz = alert.timestamp.astimezone(timezone.utc) if alert.timestamp.tzinfo else alert.timestamp.replace(tzinfo=timezone.utc)
+                    p_tz = playbook.last_enabled_at.astimezone(timezone.utc) if playbook.last_enabled_at.tzinfo else playbook.last_enabled_at.replace(tzinfo=timezone.utc)
+                    if a_tz < p_tz:
+                        continue  # Skip this alert, it is older than when the playbook was enabled
+                
+                if should_trigger_playbook(playbook.trigger_condition, alert):
+                    # Trigger automatic background execution
+                    execution = PlaybookExecution(
+                        playbook_id=playbook.id,
+                        executed_by=None,  # system triggered
+                        status="pending",
+                        execution_log={"logs": [], "node_status": {}, "active_node_id": None, "context": {}},
+                    )
+                    db.add(execution)
+                    db.commit()
+                    db.refresh(execution)
+                    
+                    # Run async execution in a new loop (runs in background thread pool)
+                    engine = PlaybookEngine(db)
+                    asyncio.run(engine.execute(execution.id, alert_id=alert.id))
+    except Exception as e:
+        print(f"Error evaluating playbook triggers: {e}")
+    finally:
+        db.close()
 
 
 class PlaybookEngine:
@@ -50,80 +127,104 @@ class PlaybookEngine:
             log_data["logs"] = []
         log_data["logs"].append(log_entry)
         execution.execution_log = log_data
+        flag_modified(execution, "execution_log")
         self.db.add(execution)
         self.db.commit()
 
     async def execute(self, execution_id: int, alert_id: int | None = None, mock_payload: dict | None = None):
-        execution = self.db.query(PlaybookExecution).filter(PlaybookExecution.id == execution_id).first()
-        if not execution:
-            return
+        from app.db.session import SessionLocal
+        db = SessionLocal()
+        self.db = db
+        try:
+            execution = db.query(PlaybookExecution).filter(PlaybookExecution.id == execution_id).first()
+            if not execution:
+                return
 
-        playbook = self.db.query(Playbook).filter(Playbook.id == execution.playbook_id).first()
-        if not playbook:
-            execution.status = "failed"
-            self.log_event(execution, "Error: Playbook not found.", "error")
-            return
+            playbook = db.query(Playbook).filter(Playbook.id == execution.playbook_id).first()
+            if not playbook:
+                execution.status = "failed"
+                self.log_event(execution, "Error: Playbook not found.", "error")
+                return
 
-        # Initialize context
-        context = {
-            "alert": {},
-            "trigger": {},
-            "vars": {},
-            "vt_reputation": 0  # Default fallback values for demo/mock integrity
-        }
+            # Initialize context
+            context = {
+                "alert": {},
+                "trigger": {},
+                "vars": {},
+                "vt_reputation": 0
+            }
 
-        alert = None
-        if alert_id:
-            alert = self.db.query(Alert).filter(Alert.id == alert_id).first()
-        else:
-            alert = self.db.query(Alert).order_by(Alert.id.desc()).first()
+            alert = None
+            if alert_id:
+                alert = db.query(Alert).filter(Alert.id == alert_id).first()
+            else:
+                alert = db.query(Alert).order_by(Alert.id.desc()).first()
 
-        if not alert:
-            execution.status = "failed"
-            self.db.add(execution)
-            self.db.commit()
-            self.log_event(execution, "Error: No real alert found in the database. Playbook executions require a real alert event to process.", "error")
-            return
+            if not alert:
+                execution.status = "failed"
+                db.add(execution)
+                db.commit()
+                self.log_event(execution, "Error: No real alert found in the database. Playbook executions require a real alert event to process.", "error")
+                return
 
-        raw = alert.raw_data if isinstance(alert.raw_data, dict) else {}
-        agent_name = raw.get("agent", {}).get("name") or raw.get("hostname") or "unknown-host"
-        file_hash = raw.get("syscheck", {}).get("sha256_after") or raw.get("hash") or raw.get("sha256") or ""
+            raw = alert.raw_data if isinstance(alert.raw_data, dict) else {}
+            agent_name = raw.get("agent", {}).get("name") or raw.get("hostname") or "unknown-host"
+            file_hash = raw.get("syscheck", {}).get("sha256_after") or raw.get("hash") or raw.get("sha256") or ""
 
-        context["alert"] = {
-            "id": alert.id,
-            "wazuh_alert_id": alert.wazuh_alert_id,
-            "src_ip": alert.src_ip or "0.0.0.0",
-            "dst_ip": alert.dst_ip or "0.0.0.0",
-            "severity": alert.severity or 0,
-            "rule_id": alert.rule_id or "0",
-            "hostname": agent_name,
-            "file_hash": file_hash
-        }
+            context["alert"] = {
+                "id": alert.id,
+                "wazuh_alert_id": alert.wazuh_alert_id,
+                "src_ip": alert.src_ip or "0.0.0.0",
+                "dst_ip": alert.dst_ip or "0.0.0.0",
+                "severity": alert.severity or 0,
+                "rule_id": alert.rule_id or "0",
+                "hostname": agent_name,
+                "file_hash": file_hash
+            }
 
-        execution.status = "running"
-        log_data = execution.execution_log or {}
-        log_data["context"] = context
-        execution.execution_log = log_data
-        self.db.add(execution)
-        self.db.commit()
+            execution.status = "running"
+            log_data = execution.execution_log or {}
+            log_data["context"] = context
+            execution.execution_log = log_data
+            flag_modified(execution, "execution_log")
+            db.add(execution)
+            db.commit()
 
-        self.log_event(execution, f"Initialized playbook: '{playbook.name}'", "info")
+            self.log_event(execution, f"Initialized playbook: '{playbook.name}'", "info")
 
-        # Parse steps and graph layout
-        canvas_nodes = []
-        canvas_edges = []
-        if playbook.steps and len(playbook.steps) > 0:
-            canvas_nodes = playbook.steps[0].get("canvas_nodes", [])
-            canvas_edges = playbook.steps[0].get("canvas_edges", [])
+            # Create new Case linked to this playbook execution run
+            case = Case(
+                title=f"Case: {playbook.name} on {agent_name}",
+                severity=str(alert.severity or "medium"),
+                status="new",
+                related_alerts=[alert.wazuh_alert_id],
+                created_by=execution.executed_by,
+                assigned_to=None,
+                playbook_execution_id=execution.id,
+                ai_investigation=None
+            )
+            db.add(case)
+            db.commit()
+            db.refresh(case)
+            self.log_event(execution, f"Created new Case #{case.id} linked to this execution.", "success")
 
-        trigger_node = next((n for n in canvas_nodes if n.get("type") == "trigger"), None)
-        if not trigger_node:
-            execution.status = "failed"
-            self.log_event(execution, "Error: Playbook lacks a trigger node block.", "error")
-            return
+            # Parse steps and graph layout
+            canvas_nodes = []
+            canvas_edges = []
+            if playbook.steps and len(playbook.steps) > 0:
+                canvas_nodes = playbook.steps[0].get("canvas_nodes", [])
+                canvas_edges = playbook.steps[0].get("canvas_edges", [])
 
-        # Start execution flow recursively from the trigger block
-        await self._run_node(execution, trigger_node.get("id"), canvas_nodes, canvas_edges)
+            trigger_node = next((n for n in canvas_nodes if n.get("type") == "trigger"), None)
+            if not trigger_node:
+                execution.status = "failed"
+                self.log_event(execution, "Error: Playbook lacks a trigger node block.", "error")
+                return
+
+            # Start execution flow recursively from the trigger block
+            await self._run_node(execution, trigger_node.get("id"), canvas_nodes, canvas_edges)
+        finally:
+            db.close()
 
     async def resume(self, execution_id: int, approved: bool):
         execution = self.db.query(PlaybookExecution).filter(PlaybookExecution.id == execution_id).first()
@@ -136,7 +237,6 @@ class PlaybookEngine:
 
         log_data = execution.execution_log or {}
         active_node_id = log_data.get("suspended_node_id")
-        context = log_data.get("context", {})
 
         canvas_nodes = playbook.steps[0].get("canvas_nodes", [])
         canvas_edges = playbook.steps[0].get("canvas_edges", [])
@@ -154,6 +254,7 @@ class PlaybookEngine:
             log_data["node_status"] = log_data.get("node_status", {})
             log_data["node_status"][active_node_id] = "completed"
             execution.execution_log = log_data
+            flag_modified(execution, "execution_log")
             self.db.add(execution)
             self.db.commit()
 
@@ -167,6 +268,7 @@ class PlaybookEngine:
             log_data["node_status"] = log_data.get("node_status", {})
             log_data["node_status"][active_node_id] = "failed"
             execution.execution_log = log_data
+            flag_modified(execution, "execution_log")
             self.db.add(execution)
             self.db.commit()
             self.log_event(execution, "Playbook terminated because analyst denied request.", "error")
@@ -189,6 +291,7 @@ class PlaybookEngine:
         log_data["active_node_id"] = node_id
         log_data["node_status"][node_id] = "running"
         execution.execution_log = log_data
+        flag_modified(execution, "execution_log")
         self.db.add(execution)
         self.db.commit()
 
@@ -201,7 +304,7 @@ class PlaybookEngine:
         properties = node.get("properties", {})
 
         try:
-            # 1. Logic Condition Nodes
+            # 1. Logic Nodes
             if node_type == "logic":
                 if "Condition" in node.get("label"):
                     condition_expr = properties.get("condition", "")
@@ -228,14 +331,38 @@ class PlaybookEngine:
                     log_data["suspended_node_id"] = node_id
                     log_data["node_status"][node_id] = "waiting_approval"
                     execution.execution_log = log_data
+                    flag_modified(execution, "execution_log")
                     self.db.add(execution)
                     self.db.commit()
                     self.log_event(execution, "Action suspended. Waiting for SOC analyst approval...", "warning")
+                    
+                    # Notify analysts matching the required role group
+                    target_role = properties.get("role", "L2 Manager")
+                    role_map = {
+                        "L2 Manager": "L2",
+                        "L3 Architect": "L3",
+                        "SOC Admin": "Admin"
+                    }
+                    db_role = role_map.get(target_role, "L2")
+                    analysts = self.db.query(User).filter(User.role == db_role).all()
+                    
+                    playbook = self.db.query(Playbook).filter(Playbook.id == execution.playbook_id).first()
+                    p_name = playbook.name if playbook else "Security Playbook"
+                    
+                    for analyst in analysts:
+                        subject = f"ACTION REQUIRED: Pending Approval Gate in Playbook '{p_name}'"
+                        body = (
+                            f"Dear {analyst.username},\n\n"
+                            f"The playbook '{p_name}' execution #{execution.id} has reached a pending Approval Gate.\n"
+                            f"Action Required: Approve or Reject the step '{node.get('label')}' on the case.\n\n"
+                            f"Thank you,\nOctopus SOC Platform"
+                        )
+                        send_playbook_email(analyst.email, subject, body)
+                        self.log_event(execution, f"Sent pending action approval notification email to {analyst.email}", "info")
                     return
 
             # 2. Integration Nodes (VirusTotal, AD, EDR)
             elif node_type == "integration":
-                # Find connector configuration
                 connector_type = category
                 integration = self.db.query(Integration).filter(Integration.connector_type == connector_type).first()
                 
@@ -255,9 +382,8 @@ class PlaybookEngine:
                 
                 # Save result in context
                 context[node.get("label")] = result
-                # Support VT scores mapping fallback
+                
                 if connector_type == "virustotal":
-                    # Parse real VirusTotal attributes if matching structure
                     stats = result.get("data", {}).get("attributes", {}).get("last_analysis_stats", {})
                     malicious = stats.get("malicious", 0)
                     context["vt_reputation"] = malicious
@@ -265,15 +391,177 @@ class PlaybookEngine:
                 else:
                     self.log_event(execution, f"API Response successfully parsed and mapped downstream.", "success")
 
-            # 3. Notification Actions
+            # 3. Notification and AI Investigation Actions
             elif node_type == "action":
-                recipient = properties.get("channel") or properties.get("recipient") or "admin"
-                msg_body = resolve_variables(properties.get("message") or properties.get("subject") or "Alert", context)
-                self.log_event(execution, f"Triggered notification channel '{recipient}': {msg_body}", "success")
+                if "AI Investigation" in node.get("label"):
+                    self.log_event(execution, "Starting AI Automated Investigation...", "info")
+                    
+                    # Fetch raw alert details
+                    alert_id = context.get("alert", {}).get("id")
+                    alert_obj = self.db.query(Alert).filter(Alert.id == alert_id).first() if alert_id else None
+                    
+                    if alert_obj:
+                        raw_alert = str(alert_obj.raw_data)
+                        desc = alert_obj.raw_data.get("rule", {}).get("description") or "Unknown Alert"
+                        severity = alert_obj.severity or 0
+                        src_ip = alert_obj.src_ip or "unknown"
+                        agent_name = context.get("alert", {}).get("hostname") or "unknown"
+                        
+                        prompt = ai_investigation_playbook_prompt(desc, severity, src_ip, agent_name, raw_alert)
+                        try:
+                            report = await OllamaClient().chat(prompt)
+                            report_text = report.strip()
+                        except Exception as e:
+                            report_text = f"AI investigation failed to execute: {str(e)}"
+                    else:
+                        report_text = "No alert data found in execution context for AI investigation."
+                        
+                    context["ai_investigation"] = report_text
+                    
+                    # Update Case record with report
+                    case = self.db.query(Case).filter(Case.playbook_execution_id == execution.id).first()
+                    if case:
+                        case.ai_investigation = report_text
+                        self.db.add(case)
+                        self.db.commit()
+                        self.log_event(execution, "AI Investigation report successfully generated and saved to Case details.", "success")
+                    else:
+                        self.log_event(execution, "AI Investigation report generated, but no active Case was found.", "warning")
+                
+                elif "Email" in node.get("label") or properties.get("recipient"):
+                    rec_val = properties.get("recipient", "")
+                    recipient_email = ""
+                    
+                    if rec_val.isdigit():
+                        user = self.db.query(User).filter(User.id == int(rec_val)).first()
+                        if user:
+                            recipient_email = user.email
+                    else:
+                        recipient_email = resolve_variables(rec_val, context)
+                        
+                    if not recipient_email:
+                        recipient_email = "admin@octopus.local"
+                        
+                    # Fetch raw alert details for email template
+                    alert_id = context.get("alert", {}).get("id")
+                    alert_obj = self.db.query(Alert).filter(Alert.id == alert_id).first() if alert_id else None
+                    
+                    rule_id = "unknown"
+                    desc = "Security Alert"
+                    timestamp_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+                    agent_name = context.get("alert", {}).get("hostname") or "unknown-host"
+                    
+                    if alert_obj:
+                        rule_id = alert_obj.rule_id or "unknown"
+                        raw_data = alert_obj.raw_data if isinstance(alert_obj.raw_data, dict) else {}
+                        desc = raw_data.get("rule", {}).get("description") or "Unknown Alert"
+                        if alert_obj.timestamp:
+                            timestamp_str = alert_obj.timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
+                    
+                    # Generate AI Subject based on alert description
+                    subj = f"Alert Triggered on {agent_name} (Rule {rule_id})"
+                    try:
+                        self.log_event(execution, "Generating AI email subject line...", "info")
+                        subject_prompt = (
+                            "You are an AI Security assistant. Generate a brief, single-sentence email subject line for a security alert. "
+                            f"Alert Rule ID: {rule_id}. Description: {desc}. Host: {agent_name}. "
+                            "Output ONLY the subject line text, and do NOT include quotes, prefixes, or any extra text."
+                        )
+                        ai_subj = await OllamaClient().chat(subject_prompt)
+                        ai_subj = ai_subj.strip().strip('"').strip("'")
+                        if ai_subj:
+                            subj = ai_subj
+                    except Exception as e:
+                        self.log_event(execution, f"Could not generate AI subject, using fallback. Error: {e}", "warning")
+                    
+                    # Build premium HTML email body
+                    include_ai = properties.get("include_ai_investigation", False)
+                    ai_report_html = ""
+                    if include_ai:
+                        # Wait for up to 60 seconds for the AI Investigation node (if present on canvas) to populate context
+                        has_ai_node = any("AI Investigation" in n.get("label", "") for n in nodes)
+                        if has_ai_node and not context.get("ai_investigation"):
+                            self.log_event(execution, "Waiting for AI Investigation block to complete processing...", "info")
+                            wait_limit = 60
+                            while not context.get("ai_investigation") and wait_limit > 0:
+                                await asyncio.sleep(1)
+                                wait_limit -= 1
+                        
+                        ai_report = context.get("ai_investigation")
+                        if ai_report:
+                            formatted_report = ai_report.replace("\n", "<br>")
+                            ai_report_html = f"""
+                            <div class="section-title">AI Automated Investigation Report</div>
+                            <div class="ai-report">
+                                {formatted_report}
+                            </div>
+                            """
+                        else:
+                            ai_report_html = """
+                            <div class="section-title">AI Automated Investigation Report</div>
+                            <div class="ai-report" style="color: #64748b; font-style: italic;">
+                                AI Investigation was requested but no report content was found in execution context.
+                            </div>
+                            """
+                    
+                    body = f"""<html>
+<head>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #1e293b; background-color: #f8fafc; margin: 0; padding: 24px; }}
+    .card {{ background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 24px; max-width: 600px; margin: 0 auto; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }}
+    .header {{ border-bottom: 2px solid #f1f5f9; padding-bottom: 16px; margin-bottom: 20px; }}
+    .header h2 {{ margin: 0; color: #ef4444; font-size: 20px; }}
+    .meta-table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
+    .meta-table td {{ padding: 8px 0; border-bottom: 1px solid #f1f5f9; font-size: 14px; }}
+    .meta-label {{ font-weight: bold; color: #64748b; width: 130px; }}
+    .meta-value {{ color: #0f172a; }}
+    .section-title {{ font-size: 14px; font-weight: 700; text-transform: uppercase; color: #475569; letter-spacing: 0.05em; margin: 24px 0 12px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; }}
+    .ai-report {{ background-color: #faf5ff; border: 1px solid #f3e8ff; border-radius: 8px; padding: 16px; font-size: 13px; color: #581c87; line-height: 1.6; }}
+    .footer {{ text-align: center; margin-top: 24px; font-size: 11px; color: #94a3b8; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header">
+      <h2>Octopus SOAR Alert Notification</h2>
+    </div>
+    
+    <table class="meta-table">
+      <tr>
+        <td class="meta-label">Alert Triggered</td>
+        <td class="meta-value">Rule {rule_id} - {desc}</td>
+      </tr>
+      <tr>
+        <td class="meta-label">Timestamp</td>
+        <td class="meta-value">{timestamp_str}</td>
+      </tr>
+      <tr>
+        <td class="meta-label">Host/Endpoint</td>
+        <td class="meta-value">{agent_name}</td>
+      </tr>
+    </table>
+    
+    {ai_report_html}
+    
+    <div class="footer">
+      This is an automated response generated by Octopus Security Orchestration, Automation, and Response (SOAR).
+    </div>
+  </div>
+</body>
+</html>"""
+                    
+                    send_playbook_email(recipient_email, subj, body)
+                    self.log_event(execution, f"Sent email notification to {recipient_email} (Subject: {subj})", "success")
+                    
+                else:
+                    recipient = properties.get("channel") or properties.get("recipient") or "admin"
+                    msg_body = resolve_variables(properties.get("message") or properties.get("subject") or "Alert", context)
+                    self.log_event(execution, f"Triggered notification channel '{recipient}': {msg_body}", "success")
 
             # Mark node completed
             log_data["node_status"][node_id] = "completed"
             execution.execution_log = log_data
+            flag_modified(execution, "execution_log")
             self.db.add(execution)
             self.db.commit()
 
@@ -281,9 +569,9 @@ class PlaybookEngine:
             outgoing_edges = [e for e in edges if e.get("fromNodeId") == node_id]
             
             if not outgoing_edges:
-                # Execution convergence point reached
                 execution.status = "completed"
                 execution.execution_log["active_node_id"] = None
+                flag_modified(execution, "execution_log")
                 self.db.add(execution)
                 self.db.commit()
                 self.log_event(execution, "Playbook reached convergence end. Finished execution successfully.", "success")
@@ -296,6 +584,7 @@ class PlaybookEngine:
             execution.status = "failed"
             log_data["node_status"][node_id] = "failed"
             execution.execution_log = log_data
+            flag_modified(execution, "execution_log")
             self.db.add(execution)
             self.db.commit()
             self.log_event(execution, f"Step execution failed: {err}", "error")

@@ -53,6 +53,7 @@ services:
         condition: service_healthy
     volumes:
       - /etc/wazuh-indexer/certs:/wazuh-certs:ro
+      - ./mail_sent.log:/home/achraf/Octopus/mail_sent.log
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -71,6 +72,7 @@ services:
       - postgres
     volumes:
       - /etc/wazuh-indexer/certs:/wazuh-certs:ro
+      - ./mail_sent.log:/home/achraf/Octopus/mail_sent.log
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: celery -A app.celery_app:celery_app worker -l info

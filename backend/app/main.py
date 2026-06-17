@@ -9,7 +9,7 @@ from app.routers.ai import router as ai_router
 from app.routers.alerts import router as alerts_router
 from app.routers.auth import router as auth_router
 from app.routers.health import router as health_router
-from app.routers.incidents import router as incidents_router
+from app.routers.cases import router as cases_router
 from app.routers.playbooks import router as playbooks_router
 from app.routers.rules import router as rules_router
 from app.routers.threat_hunt import router as threat_hunt_router
@@ -32,7 +32,7 @@ app.include_router(auth_router, prefix="/auth")
 app.include_router(ai_router)
 app.include_router(alerts_router)
 app.include_router(users_router)
-app.include_router(incidents_router)
+app.include_router(cases_router)
 app.include_router(rules_router)
 app.include_router(playbooks_router)
 app.include_router(threat_hunt_router)
@@ -45,6 +45,11 @@ def startup_event() -> None:
 	Base.metadata.create_all(bind=engine)
 	db = SessionLocal()
 	try:
+		from sqlalchemy import text
+		db.execute(text("ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;"))
+		db.execute(text("ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS last_enabled_at TIMESTAMP WITH TIME ZONE NULL;"))
+		db.execute(text("UPDATE playbooks SET last_enabled_at = NOW() WHERE enabled = TRUE AND last_enabled_at IS NULL;"))
+		db.commit()
 		ensure_bootstrap_admin(db)
 	finally:
 		db.close()

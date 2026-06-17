@@ -32,6 +32,7 @@ const DEFAULT_EDGES = []
 export default function Playbooks() {
   const [playbooks, setPlaybooks] = useState([])
   const [integrations, setIntegrations] = useState([])
+  const [users, setUsers] = useState([])
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
@@ -78,12 +79,14 @@ export default function Playbooks() {
   // Load playbooks and integrations (integrations needed for dynamic library blocks)
   async function loadData() {
     try {
-      const [pbResp, intResp] = await Promise.all([
+      const [pbResp, intResp, userResp] = await Promise.all([
         api.get('/playbooks'),
-        api.get('/integrations')
+        api.get('/integrations'),
+        api.get('/users').catch(() => ({ data: [] })) // Fallback if L2 manager check fails
       ])
       setPlaybooks(pbResp.data ?? [])
       setIntegrations(intResp.data ?? [])
+      setUsers(userResp.data ?? [])
     } catch (err) {
       setError('Could not load SOAR orchestration datasets.')
     }
@@ -92,6 +95,29 @@ export default function Playbooks() {
   useEffect(() => {
     loadData()
   }, [])
+
+  // Helper to determine if an AI Investigation block precedes the current node in execution flow
+  const isAIInvestigationBefore = (targetNodeId) => {
+    const visited = new Set()
+    const queue = [targetNodeId]
+    while (queue.length > 0) {
+      const currentId = queue.shift()
+      if (visited.has(currentId)) continue
+      visited.add(currentId)
+
+      const incomingEdges = edges.filter(e => String(e.toNodeId) === String(currentId))
+      for (const edge of incomingEdges) {
+        const sourceNode = nodes.find(n => String(n.id) === String(edge.fromNodeId))
+        if (sourceNode) {
+          if (sourceNode.label && sourceNode.label.includes('AI Investigation')) {
+            return true
+          }
+          queue.push(sourceNode.id)
+        }
+      }
+    }
+    return false
+  }
 
   // Builder View Helpers
   const openNewPlaybookBuilder = () => {
@@ -156,6 +182,30 @@ export default function Playbooks() {
       setTimeout(() => setSuccess(''), 3000)
     } catch (err) {
       setError('Failed to deploy playbook. Verify role permissions.')
+    }
+  }
+
+  const handleTogglePlaybook = async (id) => {
+    try {
+      await api.patch(`/playbooks/${id}/toggle`)
+      setPlaybooks(prev => prev.map(pb => pb.id === id ? { ...pb, enabled: !pb.enabled } : pb))
+      setTimeout(() => setSuccess(''), 2000)
+    } catch {
+      setError('Failed to update playbook status.')
+      setTimeout(() => setError(''), 3000)
+    }
+  }
+
+  const handleDeletePlaybook = async (id) => {
+    if (!window.confirm('Are you sure you want to delete this playbook? This will clear its execution history.')) return
+    try {
+      await api.delete(`/playbooks/${id}`)
+      setPlaybooks(prev => prev.filter(pb => pb.id !== id))
+      setSuccess('Playbook deleted successfully.')
+      setTimeout(() => setSuccess(''), 2000)
+    } catch {
+      setError('Failed to delete playbook. Requires Manager role.')
+      setTimeout(() => setError(''), 3000)
     }
   }
 
@@ -455,7 +505,8 @@ export default function Playbooks() {
                   if (isSimulating) handleInterruptVoice()
                   setIsBuilderOpen(false)
                 }}
-                className="p-1.5 rounded-lg border border-slate-800 bg-slate-950 hover:text-slate-200 transition text-slate-400 text-xs"
+                className="p-1.5 rounded-lg border border-slate-800 text-slate-400 hover:text-slate-200 transition text-xs"
+                style={{ background: '#020617' }}
               >
                 ← Back
               </button>
@@ -476,6 +527,7 @@ export default function Playbooks() {
                 <button
                   onClick={() => setZoom(prev => Math.max(0.5, prev - 0.1))}
                   className="p-1 hover:text-blue-400 transition"
+                  style={{ background: 'transparent' }}
                   title="Zoom Out"
                 >
                   <ZoomOut className="w-3.5 h-3.5" />
@@ -486,6 +538,7 @@ export default function Playbooks() {
                 <button
                   onClick={() => setZoom(prev => Math.min(1.5, prev + 0.1))}
                   className="p-1 hover:text-blue-400 transition"
+                  style={{ background: 'transparent' }}
                   title="Zoom In"
                 >
                   <ZoomIn className="w-3.5 h-3.5" />
@@ -493,6 +546,7 @@ export default function Playbooks() {
                 <button
                   onClick={() => { setZoom(1.0); setPanOffset({ x: 0, y: 0 }) }}
                   className="p-1 border-l border-slate-800 ml-1 text-[9px] text-slate-500 hover:text-slate-200"
+                  style={{ background: 'transparent' }}
                   title="Reset Zoom & Pan"
                 >
                   Reset
@@ -503,11 +557,12 @@ export default function Playbooks() {
               <button
                 onClick={runSimulation}
                 disabled={isSimulating}
-                className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold transition ${
+                className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold border transition ${
                   isSimulating
-                    ? 'bg-blue-900/40 border border-blue-800 text-blue-400 cursor-not-allowed'
-                    : 'bg-green-600 border border-green-500 text-white hover:bg-green-500 active:scale-95'
+                    ? 'border-slate-800 text-slate-650 cursor-not-allowed'
+                    : 'border-slate-700 text-slate-350 hover:text-white active:scale-95'
                 }`}
+                style={{ background: '#0f172a' }}
               >
                 <Play className="w-3.5 h-3.5" />
                 {isSimulating ? 'Simulating...' : 'Run Simulation'}
@@ -516,7 +571,8 @@ export default function Playbooks() {
               {/* Save Button */}
               <button
                 onClick={handleSavePlaybook}
-                className="px-4 py-2 bg-blue-600 border border-blue-500 rounded-lg text-xs font-semibold text-white hover:bg-blue-500 active:scale-95"
+                className="px-4 py-2 border border-slate-700 rounded-lg text-xs font-semibold text-slate-350 hover:text-white active:scale-95"
+                style={{ background: '#1e293b' }}
               >
                 Deploy Playbook
               </button>
@@ -597,6 +653,14 @@ export default function Playbooks() {
                       className="p-2.5 rounded-lg border border-slate-800 bg-slate-950 hover:border-blue-500/50 cursor-grab text-[11px] text-slate-300 hover:text-slate-100 transition flex items-center justify-between"
                     >
                       <span>Email Alert</span>
+                      <Plus className="w-3 h-3 text-slate-500" />
+                    </div>
+                    <div
+                      draggable
+                      onDragStart={() => setDraggedBlockType({ type: 'action', label: 'AI Investigation', properties: {} })}
+                      className="p-2.5 rounded-lg border border-slate-800 bg-slate-950 hover:border-blue-500/50 cursor-grab text-[11px] text-slate-300 hover:text-slate-100 transition flex items-center justify-between"
+                    >
+                      <span>AI Investigation</span>
                       <Plus className="w-3 h-3 text-slate-500" />
                     </div>
                   </div>
@@ -798,6 +862,7 @@ export default function Playbooks() {
                           <button
                             onClick={(e) => { e.stopPropagation(); handleDeleteNode(node.id) }}
                             className="p-0.5 hover:text-red-500 text-slate-600 transition"
+                            style={{ background: 'transparent' }}
                             title="Delete node"
                           >
                             <Trash2 className="w-3 h-3" />
@@ -868,15 +933,49 @@ export default function Playbooks() {
 
                         {/* Trigger properties */}
                         {node.type === 'trigger' && (
-                          <div>
-                            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono">Trigger Condition</label>
-                            <input
-                              type="text"
-                              value={node.properties.condition || ''}
-                              onChange={(e) => handleUpdateNodeProperty('condition', e.target.value)}
-                              placeholder="e.g. rule.level >= 10"
-                              className="w-full mt-1.5 px-3 py-2 rounded-lg bg-slate-950 border border-slate-850 text-slate-200 outline-none focus:border-blue-500 transition font-mono text-xs"
-                            />
+                          <div className="flex flex-col gap-3">
+                            <div>
+                              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono">Trigger Type</label>
+                              <select
+                                value={node.properties.trigger_type || (node.properties.condition?.includes('id') ? 'rule_id' : 'severity')}
+                                onChange={(e) => {
+                                  const tType = e.target.value
+                                  const val = node.properties.trigger_value || ''
+                                  const cond = tType === 'severity' ? `severity >= ${val || '10'}` : `rule.id == ${val || '5710'}`
+                                  setNodes(prev => prev.map(n => n.id === selectedNodeId ? {
+                                    ...n,
+                                    properties: { ...n.properties, trigger_type: tType, condition: cond }
+                                  } : n))
+                                }}
+                                className="w-full mt-1.5 px-3 py-2 rounded-lg bg-slate-950 border border-slate-850 text-slate-200 outline-none focus:border-blue-500 transition text-xs cursor-pointer"
+                              >
+                                <option value="severity">Severity Threshold</option>
+                                <option value="rule_id">Specific Rule ID</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono">
+                                {(node.properties.trigger_type || (node.properties.condition?.includes('id') ? 'rule_id' : 'severity')) === 'severity' ? 'Minimum Severity (0-15)' : 'Rule ID'}
+                              </label>
+                              <input
+                                type="text"
+                                value={node.properties.trigger_value || (node.properties.condition?.match(/\d+/) ? node.properties.condition.match(/\d+/)[0] : '')}
+                                onChange={(e) => {
+                                  const val = e.target.value
+                                  const tType = node.properties.trigger_type || (node.properties.condition?.includes('id') ? 'rule_id' : 'severity')
+                                  const cond = tType === 'severity' ? `severity >= ${val}` : `rule.id == ${val}`
+                                  setNodes(prev => prev.map(n => n.id === selectedNodeId ? {
+                                    ...n,
+                                    properties: { ...n.properties, trigger_value: val, condition: cond }
+                                  } : n))
+                                }}
+                                placeholder={ (node.properties.trigger_type || (node.properties.condition?.includes('id') ? 'rule_id' : 'severity')) === 'severity' ? 'e.g. 10' : 'e.g. 5710'}
+                                className="w-full mt-1.5 px-3 py-2 rounded-lg bg-slate-950 border border-slate-850 text-slate-200 outline-none focus:border-blue-500 transition font-mono text-xs"
+                              />
+                            </div>
+                            <div className="p-2 rounded bg-slate-950/40 border border-slate-850 font-mono text-[9px] text-green-400">
+                              Compiled: {node.properties.condition || 'None'}
+                            </div>
                           </div>
                         )}
 
@@ -973,6 +1072,62 @@ export default function Playbooks() {
                             </div>
                           </>
                         )}
+
+                        {node.type === 'action' && node.label.includes('Email') && (
+                          <div className="flex flex-col gap-3">
+                            <div>
+                              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono">Notify Recipient</label>
+                              <select
+                                value={node.properties.recipient || ''}
+                                onChange={(e) => handleUpdateNodeProperty('recipient', e.target.value)}
+                                className="w-full mt-1.5 px-3 py-2 rounded-lg bg-slate-950 border border-slate-850 text-slate-200 outline-none focus:border-blue-500 transition text-xs cursor-pointer"
+                              >
+                                <option value="">Select User...</option>
+                                {users.map(u => (
+                                  <option key={u.id} value={String(u.id)}>{u.username} ({u.role})</option>
+                                ))}
+                                <option value="admin@octopus.local">Default Admin Email</option>
+                              </select>
+                            </div>
+                            {isAIInvestigationBefore(node.id) && (
+                              <div className="flex items-center justify-between mt-2 pt-2.5 border-t border-slate-900/60">
+                                <span className="text-xs font-semibold text-slate-350 select-none">
+                                  Include AI Investigation Report
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateNodeProperty('include_ai_investigation', !node.properties.include_ai_investigation)}
+                                  className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full transition-colors duration-200 ease-in-out focus:outline-none focus:ring-0"
+                                  style={{
+                                    background: node.properties.include_ai_investigation ? '#30d158' : '#39393d',
+                                    padding: 0,
+                                    border: '2px solid transparent',
+                                    width: '36px',
+                                    height: '20px',
+                                    boxShadow: 'none',
+                                    outline: 'none'
+                                  }}
+                                  title={node.properties.include_ai_investigation ? 'Disable AI Report' : 'Enable AI Report'}
+                                >
+                                  <span
+                                    className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                                      node.properties.include_ai_investigation ? 'translate-x-4' : 'translate-x-0'
+                                    }`}
+                                  />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {node.type === 'action' && node.label.includes('AI Investigation') && (
+                          <div className="p-3.5 rounded-lg border border-purple-500/20 bg-purple-950/10 text-xs text-purple-300 leading-normal flex flex-col gap-2">
+                            <span className="font-bold flex items-center gap-1.5 text-purple-400">
+                              <Shield className="w-4 h-4 animate-pulse" /> AI Automated Investigation
+                            </span>
+                            <p>This block triggers a comprehensive threat intelligence check via Ollama, translating alert payloads into Description, Summary, and Recommendations directly on the Case.</p>
+                          </div>
+                        )}
                       </div>
                     )
                   })()
@@ -998,7 +1153,8 @@ export default function Playbooks() {
                     setActiveSimNodeId(null)
                     setApprovalModalNodeId(null)
                   }}
-                  className="p-1 hover:text-slate-200 text-slate-500 transition text-[9px] font-mono border border-slate-800 rounded bg-slate-950"
+                  className="p-1 hover:text-slate-200 text-slate-500 transition text-[9px] font-mono border border-slate-800 rounded"
+                  style={{ background: '#020617' }}
                 >
                   Terminate
                 </button>
@@ -1046,13 +1202,15 @@ export default function Playbooks() {
                 <div className="flex items-center gap-3 mt-2">
                   <button
                     onClick={() => handleApproveAction(approvalModalNodeId, false)}
-                    className="flex-1 py-2 rounded-lg bg-slate-950 border border-slate-800 hover:border-red-500/50 text-xs text-red-400 font-semibold hover:bg-red-950/20 transition active:scale-95 cursor-pointer"
+                    className="flex-1 py-2 rounded-lg border border-slate-800 hover:border-red-500/50 text-xs text-red-400 font-semibold hover:bg-red-950/20 transition active:scale-95 cursor-pointer"
+                    style={{ background: '#020617' }}
                   >
                     Reject Action
                   </button>
                   <button
                     onClick={() => handleApproveAction(approvalModalNodeId, true)}
-                    className="flex-1 py-2 rounded-lg bg-green-600 border border-green-500 hover:bg-green-500 text-xs text-white font-semibold transition active:scale-95 cursor-pointer"
+                    className="flex-1 py-2 rounded-lg border border-green-900 text-green-400 text-xs font-semibold transition active:scale-95 cursor-pointer"
+                    style={{ background: 'rgba(34, 197, 94, 0.15)' }}
                   >
                     Approve & Run
                   </button>
@@ -1083,7 +1241,8 @@ export default function Playbooks() {
                 <h2>Orchestration Playbooks</h2>
                 <button
                   onClick={openNewPlaybookBuilder}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-900 border border-blue-700 text-blue-100 hover:bg-blue-800 transition cursor-pointer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-700 text-slate-350 hover:text-white transition cursor-pointer"
+                  style={{ background: '#0f172a' }}
                 >
                   <Plus className="w-3.5 h-3.5" />
                   Create Visual Playbook
@@ -1096,6 +1255,7 @@ export default function Playbooks() {
                     <tr>
                       <th>Playbook Name</th>
                       <th>Trigger Logic</th>
+                      <th>Status</th>
                       <th>Nodes</th>
                       <th>Connector Mappings</th>
                       <th>Actions</th>
@@ -1115,6 +1275,29 @@ export default function Playbooks() {
                               {playbook.trigger_condition || '-'}
                             </span>
                           </td>
+                          <td>
+                            <button
+                              type="button"
+                              onClick={() => handleTogglePlaybook(playbook.id)}
+                              className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full transition-colors duration-200 ease-in-out focus:outline-none focus:ring-0"
+                              style={{
+                                background: playbook.enabled ? '#30d158' : '#39393d',
+                                padding: 0,
+                                border: '2px solid transparent',
+                                width: '36px',
+                                height: '20px',
+                                boxShadow: 'none',
+                                outline: 'none'
+                              }}
+                              title={playbook.enabled ? 'Click to Disable' : 'Click to Enable'}
+                            >
+                              <span
+                                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                                  playbook.enabled ? 'translate-x-4' : 'translate-x-0'
+                                }`}
+                              />
+                            </button>
+                          </td>
                           <td>{stepCount || 7} Blocks</td>
                           <td>
                             <div className="flex gap-1">
@@ -1127,12 +1310,14 @@ export default function Playbooks() {
                               <button
                                 type="button"
                                 onClick={() => openExistingPlaybookBuilder(playbook)}
-                                className="px-2.5 py-1 text-xs rounded border border-slate-700 bg-slate-850 hover:bg-slate-800 text-slate-300 transition"
+                                className="px-2.5 py-1 text-xs rounded border border-slate-700 text-slate-350 hover:text-white transition cursor-pointer"
+                                style={{ background: '#1e293b' }}
                               >
                                 Open Editor
                               </button>
                               <button
                                 type="button"
+                                disabled={!playbook.enabled}
                                 onClick={async () => {
                                   try {
                                     await api.post(`/playbooks/${playbook.id}/execute`)
@@ -1143,9 +1328,23 @@ export default function Playbooks() {
                                     setTimeout(() => setError(''), 3000)
                                   }
                                 }}
-                                className="px-2.5 py-1 text-xs rounded bg-blue-600 border border-blue-500 text-white hover:bg-blue-500 transition"
+                                className={`px-2.5 py-1 text-xs rounded border transition cursor-pointer ${
+                                  playbook.enabled 
+                                    ? 'border-slate-800 text-slate-300 hover:text-white' 
+                                    : 'border-slate-800 text-slate-650 cursor-not-allowed'
+                                }`}
+                                style={{ background: playbook.enabled ? '#0f172a' : '#1e293b' }}
                               >
                                 Run Log
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeletePlaybook(playbook.id)}
+                                className="p-1 rounded border border-red-900/60 text-red-400 hover:bg-red-950/60 transition active:scale-95 cursor-pointer"
+                                style={{ background: 'rgba(239, 68, 68, 0.1)' }}
+                                title="Delete Playbook"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </div>
                           </td>
@@ -1154,7 +1353,7 @@ export default function Playbooks() {
                     })}
                     {!playbooks.length && (
                       <tr>
-                        <td colSpan={5} className="muted text-center py-6">
+                        <td colSpan={6} className="muted text-center py-6">
                           No playbooks loaded in Database. Click "Create Visual Playbook" to design security automation.
                         </td>
                       </tr>

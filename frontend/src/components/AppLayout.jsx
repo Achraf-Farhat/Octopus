@@ -76,7 +76,7 @@ function Icon({ name }) {
 const links = [
   { to: '/dashboard', label: 'Dashboard', icon: 'dashboard' },
   { to: '/threat-hunt', label: 'Threat Hunt', icon: 'hunt' },
-  { to: '/incidents', label: 'Incidents', icon: 'incidents' },
+  { to: '/cases', label: 'Cases', icon: 'incidents' },
   { to: '/rules', label: 'Rules', icon: 'rules' },
   { to: '/endpoints', label: 'Endpoints', icon: 'endpoints' },
   { to: '/playbooks', label: 'Playbooks', icon: 'playbooks' },

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, status, BackgroundTasks
 from sqlalchemy.orm import Session
 
@@ -5,6 +6,7 @@ from app.db.session import get_db
 from app.deps import get_current_user, require_roles
 from app.models.playbook import Playbook
 from app.models.playbook_execution import PlaybookExecution
+from app.models.case import Case
 from app.models.user import User
 from app.schemas.playbook import PlaybookCreate, PlaybookExecutionRead, PlaybookRead
 from app.services.audit import write_audit_log
@@ -25,11 +27,14 @@ def create_playbook(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles("Manager")),
 ):
+    is_enabled = payload.enabled if payload.enabled is not None else True
     playbook = Playbook(
         name=payload.name,
         trigger_condition=payload.trigger_condition,
         steps=payload.steps,
         created_by=current_user.id,
+        enabled=is_enabled,
+        last_enabled_at=datetime.now(timezone.utc) if is_enabled else None,
     )
     db.add(playbook)
     db.commit()
@@ -66,6 +71,9 @@ def execute_playbook(
     playbook = db.query(Playbook).filter(Playbook.id == playbook_id).first()
     if not playbook:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playbook not found")
+        
+    if not playbook.enabled:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot execute a disabled playbook")
 
     alert_id = payload.alert_id if payload else None
 
@@ -125,3 +133,69 @@ async def approve_playbook_execution(
     await engine.resume(execution_id, approved)
     
     return {"status": "success", "message": f"Execution resumed: approved={approved}"}
+
+
+@router.patch("/{playbook_id}/toggle", response_model=PlaybookRead)
+def toggle_playbook(
+    playbook_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("L2")),
+):
+    playbook = db.query(Playbook).filter(Playbook.id == playbook_id).first()
+    if not playbook:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playbook not found")
+    
+    playbook.enabled = not playbook.enabled
+    if playbook.enabled:
+        playbook.last_enabled_at = datetime.now(timezone.utc)
+    db.add(playbook)
+    db.commit()
+    db.refresh(playbook)
+    
+    write_audit_log(
+        db,
+        user_id=current_user.id,
+        action="playbook.toggle",
+        resource_type="playbook",
+        resource_id=str(playbook.id),
+        details={"name": playbook.name, "enabled": playbook.enabled},
+        ip_address=request.client.host if request.client else None,
+    )
+    return playbook
+
+
+@router.delete("/{playbook_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_playbook(
+    playbook_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("Manager")),
+):
+    playbook = db.query(Playbook).filter(Playbook.id == playbook_id).first()
+    if not playbook:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playbook not found")
+        
+    # Cascade execution history cleanup to avoid DB ForeignKey constraints
+    executions = db.query(PlaybookExecution).filter(PlaybookExecution.playbook_id == playbook_id).all()
+    execution_ids = [e.id for e in executions]
+    if execution_ids:
+        # Set playbook_execution_id to null in cases first
+        db.query(Case).filter(Case.playbook_execution_id.in_(execution_ids)).update(
+            {Case.playbook_execution_id: None}, synchronize_session=False
+        )
+        # Delete the executions
+        db.query(PlaybookExecution).filter(PlaybookExecution.id.in_(execution_ids)).delete(synchronize_session=False)
+        
+    db.delete(playbook)
+    db.commit()
+
+    write_audit_log(
+        db,
+        user_id=current_user.id,
+        action="playbook.delete",
+        resource_type="playbook",
+        resource_id=str(playbook_id),
+        details={"name": playbook.name},
+        ip_address=request.client.host if request.client else None,
+    )
