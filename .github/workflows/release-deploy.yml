@@ -75,16 +75,10 @@ jobs:
   deploy:
     name: Continuous Deployment (CD)
     needs: build-and-push
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
-      # 8. Log into remote server via SSH, pull updated registry images, and reload containers
-      - name: Remote Deploy via SSH
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            cd /home/achraf/Octopus
-            docker compose pull
-            docker compose up -d --remove-orphans
+      - name: Pull and Rebuild Containers
+        run: |
+          cd /home/achraf/Octopus
+          echo "${{ secrets.VM_SUDO_PASSWORD }}" | sudo -S docker-compose pull
+          echo "${{ secrets.VM_SUDO_PASSWORD }}" | sudo -S docker-compose up -d --remove-orphans
