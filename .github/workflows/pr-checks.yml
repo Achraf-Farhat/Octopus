@@ -1,0 +1,35 @@
+name: Pull Request Security & Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  security-audit:
+    name: DevSecOps Code Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      # 1. Scan for leaked credentials/secrets
+      - name: Gitleaks Secrets Scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 2. Run Semgrep SAST scan for code quality & patterns
+      - name: Semgrep SAST Scan
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: "p/security-audit"
+
+      # 3. Scan codebase filesystem for vulnerable libraries (SCA)
+      - name: Trivy Dependency Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
