@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard'
 import Incidents from './pages/Incidents'
 import Login from './pages/Login'
 import Playbooks from './pages/Playbooks'
+import IntegrationHub from './pages/IntegrationHub'
 import Rules from './pages/Rules'
 import ThreatHunt from './pages/ThreatHunt'
 import Users from './pages/Users'
@@ -54,6 +55,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <Playbooks />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/integrations"
+            element={
+              <ProtectedRoute>
+                <IntegrationHub />
               </ProtectedRoute>
             }
           />

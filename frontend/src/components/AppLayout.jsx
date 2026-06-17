@@ -46,6 +46,14 @@ function Icon({ name }) {
       </svg>
     )
   }
+  if (name === 'integrations') {
+    return (
+      <svg {...common}>
+        <circle cx="12" cy="12" r="3" />
+        <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83" />
+      </svg>
+    )
+  }
   if (name === 'endpoints') {
     return (
       <svg {...common}>
@@ -72,6 +80,7 @@ const links = [
   { to: '/rules', label: 'Rules', icon: 'rules' },
   { to: '/endpoints', label: 'Endpoints', icon: 'endpoints' },
   { to: '/playbooks', label: 'Playbooks', icon: 'playbooks' },
+  { to: '/integrations', label: 'Integrations', icon: 'integrations' },
   { to: '/users', label: 'Users', icon: 'users' },
 ]
 
