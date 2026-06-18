@@ -34,8 +34,7 @@ jobs:
           REDIS_URL: "redis://localhost:6379/0"
           SECRET_KEY: "test_secret_key"
         run: |
-          cd backend
-          pytest --cov=app --cov-report=xml:coverage.xml
+          PYTHONPATH=backend pytest backend/tests/ -c backend/pytest.ini --cov=backend/app --cov-report=xml:backend/coverage.xml
 
       # 2. Set up Node and run frontend tests
       - name: Set up Node.js
@@ -54,6 +53,8 @@ jobs:
         run: |
           cd frontend
           npm run coverage
+          # Adjust source file paths inside lcov.info to be relative to the repository root
+          sed -i 's/SF:/SF:frontend\//g' coverage/lcov.info
 
       # 3. Trigger SonarCloud Scan
       - name: SonarCloud Scan
