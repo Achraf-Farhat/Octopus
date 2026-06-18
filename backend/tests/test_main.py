@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from app.main import app
 
 client = TestClient(app)
@@ -21,12 +21,12 @@ def test_health_check():
         
         # Mock Wazuh
         mock_wazuh_instance = mock_wazuh_client.return_value
-        mock_wazuh_instance.health.return_value = {"status": "ok"}
+        mock_wazuh_instance.health = AsyncMock(return_value={"status": "ok"})
         
         # Mock Ollama
         mock_ollama_instance = mock_ollama_client.return_value
-        mock_ollama_instance.is_available.return_value = True
-        mock_ollama_instance.has_model.return_value = True
+        mock_ollama_instance.is_available = AsyncMock(return_value=True)
+        mock_ollama_instance.has_model = AsyncMock(return_value=True)
         
         response = client.get("/health")
         assert response.status_code == 200
