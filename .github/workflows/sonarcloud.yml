@@ -67,6 +67,6 @@ jobs:
             -Dsonar.organization=achraf-farhat
             -Dsonar.sources=backend/app,frontend/src
             -Dsonar.tests=backend/tests,frontend/src/tests
-            -Dsonar.exclusions=**/node_modules/**,**/migrations/**,**/__pycache__/**,**/*.test.jsx,**/*.spec.jsx
+            -Dsonar.exclusions=**/node_modules/**,**/migrations/**,**/__pycache__/**,**/*.test.jsx,**/*.spec.jsx,frontend/src/tests/**
             -Dsonar.python.coverage.reportPaths=backend/coverage.xml
             -Dsonar.javascript.lcov.reportPaths=frontend/coverage/lcov.info
