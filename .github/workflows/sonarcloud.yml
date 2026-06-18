@@ -30,9 +30,9 @@ jobs:
 
       - name: Run Backend Tests & Generate Coverage
         env:
-          DATABASE_URL: sqlite:///:memory:
-          REDIS_URL: redis://localhost:6379/0
-          SECRET_KEY: test_secret_key
+          DATABASE_URL: "sqlite:///:memory:"
+          REDIS_URL: "redis://localhost:6379/0"
+          SECRET_KEY: "test_secret_key"
         run: |
           cd backend
           pytest --cov=app --cov-report=xml:coverage.xml
