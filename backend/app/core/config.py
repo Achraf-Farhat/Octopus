@@ -6,7 +6,7 @@ from dataclasses import dataclass
 class Settings:
     project_name: str = os.getenv("PROJECT_NAME", "Octopus")
     environment: str = os.getenv("ENVIRONMENT", "development")
-    database_url: str = os.getenv("DATABASE_URL", "")
+    database_url: str = os.getenv("DATABASE_URL", "sqlite:///:memory:")
     redis_url: str = os.getenv("REDIS_URL", "")
     secret_key: str = os.getenv("SECRET_KEY", "")
     algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
