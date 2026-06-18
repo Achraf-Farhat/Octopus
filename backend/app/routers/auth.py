@@ -66,7 +66,14 @@ def refresh_tokens(payload: RefreshRequest, request: Request, db: Session = Depe
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
 
     stored = db.query(RefreshToken).filter(RefreshToken.token == payload.refresh_token).first()
-    if not stored or stored.expires_at < datetime.now(timezone.utc):
+    if not stored:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token expired or revoked")
+
+    expires_at = stored.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    if expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token expired or revoked")
 
     user = db.query(User).filter(User.id == int(decoded["sub"]), User.is_active.is_(True)).first()

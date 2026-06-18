@@ -2,7 +2,9 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 def test_ensure_ollama_ready_no_url(client):
-    with patch("app.services.ollama_client.OllamaClient.base_url", None):
+    with patch("app.routers.ai.OllamaClient") as mock_ollama_class:
+        mock_instance = mock_ollama_class.return_value
+        mock_instance.base_url = None
         response = client.post("/ai/translate-search", json={"query": "test query"})
         assert response.status_code == 503
         assert "is not configured" in response.json()["detail"]
