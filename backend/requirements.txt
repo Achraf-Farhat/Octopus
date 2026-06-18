@@ -12,3 +12,5 @@ python-dotenv
 alembic
 httpx
 email-validator
+pytest
+pytest-cov
