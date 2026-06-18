@@ -46,10 +46,11 @@ def startup_event() -> None:
 	db = SessionLocal()
 	try:
 		from sqlalchemy import text
-		db.execute(text("ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;"))
-		db.execute(text("ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS last_enabled_at TIMESTAMP WITH TIME ZONE NULL;"))
-		db.execute(text("UPDATE playbooks SET last_enabled_at = NOW() WHERE enabled = TRUE AND last_enabled_at IS NULL;"))
-		db.commit()
+		if engine.dialect.name != "sqlite":
+			db.execute(text("ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;"))
+			db.execute(text("ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS last_enabled_at TIMESTAMP WITH TIME ZONE NULL;"))
+			db.execute(text("UPDATE playbooks SET last_enabled_at = NOW() WHERE enabled = TRUE AND last_enabled_at IS NULL;"))
+			db.commit()
 		ensure_bootstrap_admin(db)
 	finally:
 		db.close()
