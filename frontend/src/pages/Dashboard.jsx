@@ -1086,8 +1086,7 @@ export default function Dashboard() {
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey && !busy) {
-                      e.preventDefault()
+                    if (e.key === 'Enter') {
                       handleTranslateOnly()
                     }
                   }}
