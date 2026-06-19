@@ -34,7 +34,12 @@ jobs:
           REDIS_URL: "redis://localhost:6379/0"
           SECRET_KEY: "test_secret_key"
         run: |
-          PYTHONPATH=backend pytest backend/tests/ -c backend/pytest.ini --cov=backend/app --cov-report=xml:backend/coverage.xml
+          cd backend
+          pytest --cov=app --cov-report=xml:coverage.xml
+          # Fix coverage source path to align with repository root
+          sed -i "s|<source>.*</source>|<source>$GITHUB_WORKSPACE</source>|g" coverage.xml
+          # Prefix filenames to match the repository root structure
+          sed -i 's|filename="|filename="backend/app/|g' coverage.xml
 
       # 2. Set up Node and run frontend tests
       - name: Set up Node.js
