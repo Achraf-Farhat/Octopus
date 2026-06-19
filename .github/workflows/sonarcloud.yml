@@ -36,8 +36,8 @@ jobs:
         run: |
           cd backend
           pytest --cov=app --cov-report=xml:coverage.xml
-          # Fix coverage source path to align with repository root
-          sed -i "s|<source>.*</source>|<source>$GITHUB_WORKSPACE</source>|g" coverage.xml
+          # Fix coverage source path to align with repository root inside the SonarCloud container
+          sed -i "s|<source>.*</source>|<source>/github/workspace</source>|g" coverage.xml
           # Prefix filenames to match the repository root structure
           sed -i 's|filename="|filename="backend/app/|g' coverage.xml
 
