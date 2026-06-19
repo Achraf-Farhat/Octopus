@@ -54,3 +54,9 @@ logs/
 *.pem
 *.key
 *.crt
+
+# Test Coverage Reports
+**/coverage/
+**/coverage.xml
+coverage/
+coverage.xml
