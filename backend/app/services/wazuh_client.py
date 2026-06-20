@@ -261,10 +261,16 @@ class WazuhClient:
             return token
 
     async def _request(self, method: str, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        if ".." in path or "\\" in path:
+            raise ValueError("Invalid request path: traversal detected")
         token = await self._get_token()
         headers = {"Authorization": f"Bearer {token}"}
+        base_url = self.base_url.rstrip("/") + "/"
+        url = urljoin(base_url, path.lstrip("/"))
+        if not url.startswith(base_url):
+            raise ValueError("Invalid request path: traversal detected")
         async with httpx.AsyncClient(verify=self.verify_ssl, timeout=30) as client:
-            response = await client.request(method, urljoin(self.base_url.rstrip("/") + "/", path.lstrip("/")), params=params, headers=headers)
+            response = await client.request(method, url, params=params, headers=headers)
             response.raise_for_status()
             return response.json()
 
@@ -338,11 +344,17 @@ class WazuhClient:
         return await self._request("GET", "/")
 
     async def get_rule_file(self, filename: str) -> str:
+        if ".." in filename or "/" in filename or "\\" in filename:
+            raise ValueError("Invalid filename: traversal detected")
         token = await self._get_token()
         headers = {"Authorization": f"Bearer {token}"}
+        base_url = self.base_url.rstrip("/") + "/"
+        url = urljoin(base_url, f"rules/files/{filename}")
+        if not url.startswith(base_url):
+            raise ValueError("Invalid filename: traversal detected")
         async with httpx.AsyncClient(verify=self.verify_ssl, timeout=30) as client:
             response = await client.get(
-                urljoin(self.base_url.rstrip("/") + "/", f"rules/files/{filename}"),
+                url,
                 params={"raw": "true"},
                 headers=headers
             )
@@ -350,14 +362,20 @@ class WazuhClient:
             return response.text
 
     async def upload_rule_file(self, filename: str, content: str) -> dict[str, Any]:
+        if ".." in filename or "/" in filename or "\\" in filename:
+            raise ValueError("Invalid filename: traversal detected")
         token = await self._get_token()
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/octet-stream"
         }
+        base_url = self.base_url.rstrip("/") + "/"
+        url = urljoin(base_url, f"rules/files/{filename}")
+        if not url.startswith(base_url):
+            raise ValueError("Invalid filename: traversal detected")
         async with httpx.AsyncClient(verify=self.verify_ssl, timeout=30) as client:
             response = await client.put(
-                urljoin(self.base_url.rstrip("/") + "/", f"rules/files/{filename}"),
+                url,
                 content=content.encode("utf-8"),
                 headers=headers
             )

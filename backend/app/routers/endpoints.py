@@ -25,6 +25,11 @@ async def get_endpoint_details(
     agent_id: str,
     current_user: User = Depends(get_current_user)
 ):
+    if not agent_id.isdigit():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid agent ID format"
+        )
     client = WazuhClient()
     details = {}
     
@@ -63,6 +68,11 @@ async def get_endpoint_netiface(
     agent_id: str,
     current_user: User = Depends(get_current_user)
 ):
+    if not agent_id.isdigit():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid agent ID format"
+        )
     try:
         client = WazuhClient()
         resp = await client._request("GET", f"/syscollector/{agent_id}/netiface")
@@ -77,6 +87,11 @@ async def get_endpoint_processes(
     offset: int = 0,
     current_user: User = Depends(get_current_user)
 ):
+    if not agent_id.isdigit():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid agent ID format"
+        )
     try:
         client = WazuhClient()
         resp = await client._request("GET", f"/syscollector/{agent_id}/processes", params={"limit": limit, "offset": offset})
@@ -94,6 +109,11 @@ async def get_endpoint_packages(
     offset: int = 0,
     current_user: User = Depends(get_current_user)
 ):
+    if not agent_id.isdigit():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid agent ID format"
+        )
     try:
         client = WazuhClient()
         resp = await client._request("GET", f"/syscollector/{agent_id}/packages", params={"limit": limit, "offset": offset})
@@ -103,3 +123,4 @@ async def get_endpoint_packages(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch installed packages: {str(e)}")
+
