@@ -162,7 +162,12 @@ export default function Cases() {
         setExecutionDetails(null)
         return
       }
-      const safeId = encodeURIComponent(selectedCase.playbook_execution_id)
+      const rawId = String(selectedCase.playbook_execution_id)
+      if (!/^\d+$/.test(rawId)) {
+        setExecutionDetails(null)
+        return
+      }
+      const safeId = parseInt(rawId, 10)
       try {
         const resp = await api.get(`/playbooks/executions/${safeId}`)
         setExecutionDetails(resp.data)
@@ -196,7 +201,9 @@ export default function Cases() {
 
   // Handle Status Update
   async function handleUpdateStatus(caseId, status) {
-    const safeCaseId = encodeURIComponent(caseId)
+    const rawId = String(caseId)
+    if (!/^\d+$/.test(rawId)) return
+    const safeCaseId = parseInt(rawId, 10)
     try {
       const resp = await api.patch(`/cases/${safeCaseId}`, { status })
       setCases(prev => prev.map(c => c.id === caseId ? { ...c, status: resp.data.status } : c))
@@ -210,7 +217,9 @@ export default function Cases() {
 
   // Handle Assign User
   async function handleAssignUser(caseId, userIdVal) {
-    const safeCaseId = encodeURIComponent(caseId)
+    const rawId = String(caseId)
+    if (!/^\d+$/.test(rawId)) return
+    const safeCaseId = parseInt(rawId, 10)
     const assigned_to = userIdVal === 'unassigned' ? 0 : parseInt(userIdVal)
     try {
       const resp = await api.patch(`/cases/${safeCaseId}`, { assigned_to })
@@ -225,7 +234,9 @@ export default function Cases() {
 
   // Handle Action Gate approvals (Approve/Reject)
   async function handleApproveGate(executionId, approved) {
-    const safeExecutionId = encodeURIComponent(executionId)
+    const rawId = String(executionId)
+    if (!/^\d+$/.test(rawId)) return
+    const safeExecutionId = parseInt(rawId, 10)
     try {
       await api.post(`/playbooks/executions/${safeExecutionId}/approve`, { approved })
       setSuccess(approved ? 'Action approved successfully!' : 'Action rejected successfully.')
@@ -305,7 +316,9 @@ export default function Cases() {
 
   const handleDeleteSingleCase = async (id) => {
     if (!window.confirm('Are you sure you want to permanently delete this case?')) return
-    const safeId = encodeURIComponent(id)
+    const rawId = String(id)
+    if (!/^\d+$/.test(rawId)) return
+    const safeId = parseInt(rawId, 10)
     try {
       await api.delete(`/cases/${safeId}`)
       setSuccess('Case deleted successfully.')
