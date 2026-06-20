@@ -162,8 +162,9 @@ export default function Cases() {
         setExecutionDetails(null)
         return
       }
+      const safeId = encodeURIComponent(selectedCase.playbook_execution_id)
       try {
-        const resp = await api.get(`/playbooks/executions/${selectedCase.playbook_execution_id}`)
+        const resp = await api.get(`/playbooks/executions/${safeId}`)
         setExecutionDetails(resp.data)
         
         // Refresh case data from the database once execution finishes or the AI report becomes available
@@ -195,8 +196,9 @@ export default function Cases() {
 
   // Handle Status Update
   async function handleUpdateStatus(caseId, status) {
+    const safeCaseId = encodeURIComponent(caseId)
     try {
-      const resp = await api.patch(`/cases/${caseId}`, { status })
+      const resp = await api.patch(`/cases/${safeCaseId}`, { status })
       setCases(prev => prev.map(c => c.id === caseId ? { ...c, status: resp.data.status } : c))
       setSuccess('Case status updated successfully.')
       setTimeout(() => setSuccess(''), 2500)
@@ -208,9 +210,10 @@ export default function Cases() {
 
   // Handle Assign User
   async function handleAssignUser(caseId, userIdVal) {
+    const safeCaseId = encodeURIComponent(caseId)
     const assigned_to = userIdVal === 'unassigned' ? 0 : parseInt(userIdVal)
     try {
-      const resp = await api.patch(`/cases/${caseId}`, { assigned_to })
+      const resp = await api.patch(`/cases/${safeCaseId}`, { assigned_to })
       setCases(prev => prev.map(c => c.id === caseId ? { ...c, assigned_to: resp.data.assigned_to } : c))
       setSuccess('Case assignment updated successfully.')
       setTimeout(() => setSuccess(''), 2500)
@@ -222,8 +225,9 @@ export default function Cases() {
 
   // Handle Action Gate approvals (Approve/Reject)
   async function handleApproveGate(executionId, approved) {
+    const safeExecutionId = encodeURIComponent(executionId)
     try {
-      await api.post(`/playbooks/executions/${executionId}/approve`, { approved })
+      await api.post(`/playbooks/executions/${safeExecutionId}/approve`, { approved })
       setSuccess(approved ? 'Action approved successfully!' : 'Action rejected successfully.')
       setTimeout(() => setSuccess(''), 3000)
     } catch {
@@ -301,8 +305,9 @@ export default function Cases() {
 
   const handleDeleteSingleCase = async (id) => {
     if (!window.confirm('Are you sure you want to permanently delete this case?')) return
+    const safeId = encodeURIComponent(id)
     try {
-      await api.delete(`/cases/${id}`)
+      await api.delete(`/cases/${safeId}`)
       setSuccess('Case deleted successfully.')
       const remaining = cases.filter(c => c.id !== id)
       setSelectedCaseId(remaining.length > 0 ? remaining[0].id : null)
