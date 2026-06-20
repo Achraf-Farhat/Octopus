@@ -170,7 +170,13 @@ export default function Playbooks() {
       ]
 
       if (selectedPlaybookId) {
-        await api.put(`/playbooks/${selectedPlaybookId}`, { name: playbookName, trigger_condition, steps: stepsPayload })
+        const rawId = String(selectedPlaybookId)
+        if (!/^\d+$/.test(rawId)) {
+          setError('Invalid playbook ID')
+          return
+        }
+        const safePlaybookId = parseInt(rawId, 10)
+        await api.put(`/playbooks/${safePlaybookId}`, { name: playbookName, trigger_condition, steps: stepsPayload })
       } else {
         await api.post('/playbooks', { name: playbookName, trigger_condition, steps: stepsPayload })
       }
@@ -185,8 +191,14 @@ export default function Playbooks() {
   }
 
   const handleTogglePlaybook = async (id) => {
+    const rawId = String(id)
+    if (!/^\d+$/.test(rawId)) {
+      setError('Invalid playbook ID')
+      return
+    }
+    const safeId = parseInt(rawId, 10)
     try {
-      await api.patch(`/playbooks/${id}/toggle`)
+      await api.patch(`/playbooks/${safeId}/toggle`)
       setPlaybooks(prev => prev.map(pb => pb.id === id ? { ...pb, enabled: !pb.enabled } : pb))
       setTimeout(() => setSuccess(''), 2000)
     } catch {
@@ -197,8 +209,14 @@ export default function Playbooks() {
 
   const handleDeletePlaybook = async (id) => {
     if (!window.confirm('Are you sure you want to delete this playbook? This will clear its execution history.')) return
+    const rawId = String(id)
+    if (!/^\d+$/.test(rawId)) {
+      setError('Invalid playbook ID')
+      return
+    }
+    const safeId = parseInt(rawId, 10)
     try {
-      await api.delete(`/playbooks/${id}`)
+      await api.delete(`/playbooks/${safeId}`)
       setPlaybooks(prev => prev.filter(pb => pb.id !== id))
       setSuccess('Playbook deleted successfully.')
       setTimeout(() => setSuccess(''), 2000)
@@ -345,9 +363,17 @@ export default function Playbooks() {
     setSimNodeStatus(statusMap)
 
     logSimEvent('Contacting backend to trigger playbook run...')
+    
+    const rawPlaybookId = String(selectedPlaybookId)
+    if (!/^\d+$/.test(rawPlaybookId)) {
+      logSimEvent('Invalid playbook ID format', 'error')
+      setIsSimulating(false)
+      return
+    }
+    const safePlaybookId = parseInt(rawPlaybookId, 10)
 
     try {
-      const response = await api.post(`/playbooks/${selectedPlaybookId}/execute`)
+      const response = await api.post(`/playbooks/${safePlaybookId}/execute`)
       const execution = response.data
       setActiveExecutionId(execution.id)
       
@@ -361,9 +387,15 @@ export default function Playbooks() {
 
   const startPolling = (execId) => {
     stopPolling()
+    const rawExecId = String(execId)
+    if (!/^\d+$/.test(rawExecId)) {
+      logSimEvent('Invalid execution ID format', 'error')
+      return
+    }
+    const safeExecId = parseInt(rawExecId, 10)
     pollIntervalRef.current = setInterval(async () => {
       try {
-        const response = await api.get(`/playbooks/executions/${execId}`)
+        const response = await api.get(`/playbooks/executions/${safeExecId}`)
         const exec = response.data
         const logData = exec.execution_log || {}
 
@@ -415,8 +447,14 @@ export default function Playbooks() {
     if (!activeExecutionId) return
     setApprovalModalNodeId(null)
     logSimEvent(`Sending analyst response: ${approved ? 'APPROVE' : 'REJECT'} to backend...`, 'warning')
+    const rawExecutionId = String(activeExecutionId)
+    if (!/^\d+$/.test(rawExecutionId)) {
+      logSimEvent('Invalid execution ID format', 'error')
+      return
+    }
+    const safeExecutionId = parseInt(rawExecutionId, 10)
     try {
-      await api.post(`/playbooks/executions/${activeExecutionId}/approve`, { approved })
+      await api.post(`/playbooks/executions/${safeExecutionId}/approve`, { approved })
     } catch (err) {
       logSimEvent(`Failed to submit approval: ${err.message}`, 'error')
     }
@@ -1343,8 +1381,14 @@ export default function Playbooks() {
                                 type="button"
                                 disabled={!playbook.enabled}
                                 onClick={async () => {
+                                  const rawId = String(playbook.id)
+                                  if (!/^\d+$/.test(rawId)) {
+                                    setError('Invalid playbook ID')
+                                    return
+                                  }
+                                  const safePlaybookId = parseInt(rawId, 10)
                                   try {
-                                    await api.post(`/playbooks/${playbook.id}/execute`)
+                                    await api.post(`/playbooks/${safePlaybookId}/execute`)
                                     setSuccess('Playbook execution triggered successfully!')
                                     setTimeout(() => setSuccess(''), 3000)
                                   } catch {
