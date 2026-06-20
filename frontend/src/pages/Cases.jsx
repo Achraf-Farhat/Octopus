@@ -451,7 +451,15 @@ export default function Cases() {
               return (
                 <div
                   key={c.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setSelectedCaseId(c.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      setSelectedCaseId(c.id)
+                    }
+                  }}
                   className={`p-3 rounded-lg border transition cursor-pointer flex flex-col gap-2 ${
                     isActive
                       ? 'border-blue-500/50 bg-blue-950/10'
@@ -460,7 +468,16 @@ export default function Cases() {
                 >
                   <div className="flex items-start gap-2.5">
                     <span
+                      role="checkbox"
+                      aria-checked={bulkSelectedIds.includes(c.id)}
+                      tabIndex={0}
                       onClick={(e) => toggleSelectCase(e, c.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          toggleSelectCase(e, c.id)
+                        }
+                      }}
                       className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center cursor-pointer transition flex-shrink-0 ${
                         bulkSelectedIds.includes(c.id)
                           ? 'border-blue-500 text-white'

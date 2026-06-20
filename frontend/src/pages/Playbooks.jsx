@@ -170,8 +170,7 @@ export default function Playbooks() {
       ]
 
       if (selectedPlaybookId) {
-        // Mock update or create new for demo integrity
-        await api.post('/playbooks', { name: playbookName, trigger_condition, steps: stepsPayload })
+        await api.put(`/playbooks/${selectedPlaybookId}`, { name: playbookName, trigger_condition, steps: stepsPayload })
       } else {
         await api.post('/playbooks', { name: playbookName, trigger_condition, steps: stepsPayload })
       }
@@ -823,22 +822,47 @@ export default function Playbooks() {
                   return (
                     <div
                       key={node.id}
+                      role="button"
+                      tabIndex={0}
                       onMouseDown={(e) => handleNodeDragStart(e, node.id)}
                       onClick={(e) => { e.stopPropagation(); setSelectedNodeId(node.id) }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setSelectedNodeId(node.id)
+                        }
+                      }}
                       className={`absolute pointer-events-auto w-44 rounded-xl border bg-slate-950/95 p-3 flex flex-col gap-1.5 shadow-2xl cursor-grab transition-colors duration-150 ${nodeBorderColorClass} ${simulationPulseClass}`}
                       style={{ left: node.x, top: node.y }}
                     >
                       {/* Anchor points */}
                       {node.type !== 'trigger' && (
                         <div
+                          role="button"
+                          tabIndex={0}
                           onClick={(e) => handleAnchorClick(e, node.id, false)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              handleAnchorClick(e, node.id, false)
+                            }
+                          }}
                           className="absolute w-2.5 h-2.5 rounded-full bg-slate-800 hover:bg-blue-500 border border-slate-900 -left-1.5 top-1/2 -translate-y-1/2 cursor-crosshair z-20"
                           title="Connect Input"
                         />
                       )}
                       
                       <div
+                        role="button"
+                        tabIndex={0}
                         onClick={(e) => handleAnchorClick(e, node.id, true)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            handleAnchorClick(e, node.id, true)
+                          }
+                        }}
                         className="absolute w-2.5 h-2.5 rounded-full bg-slate-800 hover:bg-green-500 border border-slate-900 -right-1.5 top-1/2 -translate-y-1/2 cursor-crosshair z-20"
                         title="Connect Output"
                       />

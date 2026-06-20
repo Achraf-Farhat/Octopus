@@ -1048,7 +1048,15 @@ export default function ThreatHunt() {
                 return (
                   <div
                     key={s.session_id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => handleSelectSession(s.session_id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        handleSelectSession(s.session_id)
+                      }
+                    }}
                     className={`group p-3 rounded-lg text-xs cursor-pointer flex items-center justify-between border transition ${
                       isActive 
                         ? 'bg-slate-900 border-slate-800 text-blue-400' 
@@ -1121,7 +1129,15 @@ export default function ThreatHunt() {
                   {suggestions.map((s, idx) => (
                     <div
                       key={idx}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => setInput(s.desc)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          setInput(s.desc)
+                        }
+                      }}
                       className="p-3 bg-slate-900/60 border border-slate-800/80 rounded-xl text-left cursor-pointer hover:bg-slate-900 hover:border-blue-500/50 transition flex flex-col gap-1 text-xs"
                     >
                       <span className="font-semibold text-slate-200">{s.title}</span>
@@ -1286,7 +1302,15 @@ export default function ThreatHunt() {
 
                   {/* Main Orb */}
                   <div
+                    role={voiceState === 'speaking' ? 'button' : undefined}
+                    tabIndex={voiceState === 'speaking' ? 0 : -1}
                     onClick={voiceState === 'speaking' ? handleInterruptVoice : undefined}
+                    onKeyDown={(e) => {
+                      if (voiceState === 'speaking' && (e.key === 'Enter' || e.key === ' ')) {
+                        e.preventDefault()
+                        handleInterruptVoice()
+                      }
+                    }}
                     className={`w-48 h-48 rounded-full flex flex-col items-center justify-center cursor-pointer select-none relative z-10 transition-all duration-500 border ${
                       voiceState === 'speaking'
                         ? 'bg-gradient-to-tr from-purple-900/90 to-blue-900/90 border-purple-500/50 shadow-2xl animate-pulse'

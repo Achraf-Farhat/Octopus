@@ -268,9 +268,18 @@ export default function IntegrationHub() {
                     return (
                       <div
                         key={conn.type}
+                        role="button"
+                        tabIndex={0}
                         onClick={() => {
                           setWizardSelectedType(conn.type)
                           setWizardName(`${conn.name} Connector`)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            setWizardSelectedType(conn.type)
+                            setWizardName(`${conn.name} Connector`)
+                          }
                         }}
                         className={`p-3 rounded-xl border cursor-pointer text-left transition flex items-center gap-3 ${
                           isSelected

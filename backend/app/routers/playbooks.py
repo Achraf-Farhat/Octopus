@@ -53,6 +53,43 @@ def create_playbook(
     return playbook
 
 
+@router.put("/{playbook_id}", response_model=PlaybookRead)
+def update_playbook(
+    playbook_id: int,
+    payload: PlaybookCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("Manager")),
+):
+    playbook = db.query(Playbook).filter(Playbook.id == playbook_id).first()
+    if not playbook:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playbook not found")
+        
+    playbook.name = payload.name
+    playbook.trigger_condition = payload.trigger_condition
+    playbook.steps = payload.steps
+    if payload.enabled is not None:
+        playbook.enabled = payload.enabled
+        if playbook.enabled:
+            playbook.last_enabled_at = datetime.now(timezone.utc)
+            
+    db.add(playbook)
+    db.commit()
+    db.refresh(playbook)
+
+    write_audit_log(
+        db,
+        user_id=current_user.id,
+        action="playbook.update",
+        resource_type="playbook",
+        resource_id=str(playbook.id),
+        details={"name": playbook.name},
+        ip_address=request.client.host if request.client else None,
+    )
+
+    return playbook
+
+
 from pydantic import BaseModel
 
 class PlaybookExecutePayload(BaseModel):

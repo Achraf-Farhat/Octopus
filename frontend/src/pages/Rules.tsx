@@ -109,7 +109,7 @@ export default function Rules() {
   const allGroups = useMemo(() => {
     const groups = new Set<string>()
     rules.forEach(r => r.groups.forEach(g => groups.add(g)))
-    return Array.from(groups).sort()
+    return Array.from(groups).sort((a, b) => a.localeCompare(b))
   }, [rules])
 
   // --- Load Data ---
@@ -615,6 +615,7 @@ export default function Rules() {
       {/* Drawer Overlay for Mobile viewports */}
       {(mobileSidebarOpen || mobileAssistantOpen) && (
         <div 
+          aria-hidden="true"
           onClick={() => {
             setMobileSidebarOpen(false)
             setMobileAssistantOpen(false)
@@ -770,7 +771,15 @@ export default function Rules() {
                 return (
                   <div
                     key={rule.rule_id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => handleSelectRule(rule)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        handleSelectRule(rule)
+                      }
+                    }}
                     className={`p-3 text-xs flex flex-col gap-2 cursor-pointer transition select-none ${
                       isSelected 
                         ? 'bg-blue-950/40 border-l-2 border-blue-500 text-blue-100' 
@@ -857,8 +866,17 @@ export default function Rules() {
                         />
                       ) : (
                         <div 
+                          role={(selectedRule.status || 'draft') !== 'default' ? 'button' : undefined}
+                          tabIndex={(selectedRule.status || 'draft') !== 'default' ? 0 : -1}
                           onClick={() => {
                             if ((selectedRule.status || 'draft') !== 'default') {
+                              setIsEditingId(true)
+                              setEditingIdVal(selectedRule.rule_id)
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if ((selectedRule.status || 'draft') !== 'default' && (e.key === 'Enter' || e.key === ' ')) {
+                              e.preventDefault()
                               setIsEditingId(true)
                               setEditingIdVal(selectedRule.rule_id)
                             }

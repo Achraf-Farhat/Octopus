@@ -292,7 +292,15 @@ export default function Endpoints() {
                 return (
                   <div
                     key={ep.id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => handleSelectEndpoint(ep)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        handleSelectEndpoint(ep)
+                      }
+                    }}
                     className={`p-3.5 text-xs flex flex-col gap-1.5 cursor-pointer transition select-none ${
                       isSelected 
                         ? 'bg-blue-950/40 border-l-2 border-blue-500 text-blue-100' 
