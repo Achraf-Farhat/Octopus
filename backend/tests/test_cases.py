@@ -138,13 +138,16 @@ def test_bulk_delete_cases(client, db, test_user):
     db.add(case2)
     db.commit()
 
-    payload = {"case_ids": [case1.id, case2.id]}
+    case1_id = case1.id
+    case2_id = case2.id
+
+    payload = {"case_ids": [case1_id, case2_id]}
     response = client.post("/cases/bulk-delete", json=payload, headers=headers)
     assert response.status_code == 204
 
     # Assert deleted from db
-    c1 = db.query(Case).filter(Case.id == case1.id).first()
-    c2 = db.query(Case).filter(Case.id == case2.id).first()
+    c1 = db.query(Case).filter(Case.id == case1_id).first()
+    c2 = db.query(Case).filter(Case.id == case2_id).first()
     assert c1 is None
     assert c2 is None
 
