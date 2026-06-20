@@ -83,3 +83,64 @@ def test_explain_alert_fallback(client):
         assert "timed out" in data["explanation"]
         assert data["severity_assessment"] == "medium"
         assert data["confidence"] == 0.0
+
+def test_explain_alert_success(client):
+    mock_response = """
+    {
+      "summary": "This is a high severity SSH brute force attempt from external source.",
+      "why_it_matters": "Brute force allows credentials compromise.",
+      "recommended_actions": [
+        "Block source IP.",
+        "Reset user password."
+      ],
+      "severity_assessment": "critical",
+      "confidence": 0.95,
+      "notes": "No other anomalies found."
+    }
+    """
+    with patch("app.services.ollama_client.OllamaClient.base_url", "http://localhost:11434"), \
+         patch("app.services.ollama_client.OllamaClient.is_available", new_callable=AsyncMock) as mock_avail, \
+         patch("app.services.ollama_client.OllamaClient.has_model", new_callable=AsyncMock) as mock_has_model, \
+         patch("app.services.ollama_client.OllamaClient.chat", new_callable=AsyncMock) as mock_chat:
+        
+        mock_avail.return_value = True
+        mock_has_model.return_value = True
+        mock_chat.return_value = mock_response
+
+        payload = {
+            "rule_description": "Brute Force SSH",
+            "severity": "high",
+            "src_ip": "192.168.1.50",
+            "mitre_technique": "T1110",
+            "alert_data": "{}"
+        }
+        response = client.post("/ai/explain-alert", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert "This is a high severity SSH brute force" in data["explanation"]
+        assert data["severity_assessment"] == "critical"
+        assert data["confidence"] == 0.95
+
+def test_generate_rule_success(client):
+    mock_xml_response = """
+    ```xml
+    <rule id="100050" level="5">
+      <if_sid>5716</if_sid>
+      <description>Custom rule.</description>
+    </rule>
+    ```
+    """
+    with patch("app.services.ollama_client.OllamaClient.base_url", "http://localhost:11434"), \
+         patch("app.services.ollama_client.OllamaClient.is_available", new_callable=AsyncMock) as mock_avail, \
+         patch("app.services.ollama_client.OllamaClient.has_model", new_callable=AsyncMock) as mock_has_model, \
+         patch("app.services.ollama_client.OllamaClient.chat", new_callable=AsyncMock) as mock_chat:
+        
+        mock_avail.return_value = True
+        mock_has_model.return_value = True
+        mock_chat.return_value = mock_xml_response
+
+        payload = {"request": "Generate SSH fail rule"}
+        response = client.post("/ai/generate-rule", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert "<rule id=\"100050\"" in data["xml"]
